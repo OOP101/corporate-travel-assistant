@@ -1,0 +1,25 @@
+# AI出行管家 统一依赖
+# pip install -r requirements.txt
+# 版本策略：下限保证特性可用，上限取当前已验证可用的次版本（避免大版本破坏性变更）
+
+# --- Web framework ---
+fastapi>=0.115,<0.142
+pydantic>=2.7,<3.0
+uvicorn>=0.30,<0.53
+
+# --- AI orchestration ---
+langgraph>=0.2,<1.3
+langchain-core>=0.3,<1.0
+
+# --- Scheduling ---
+apscheduler>=3.10,<4.0
+
+# --- HTTP ---
+requests>=2.31,<3.0
+httpx>=0.27,<1.0
+
+# --- Observability ---
+prometheus-client>=0.20,<1.0
+
+# --- Testing ---
+pytest>=8.0,<9.0

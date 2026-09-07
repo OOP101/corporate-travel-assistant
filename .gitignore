@@ -1,0 +1,17 @@
+# 大二进制与运行时数据，不入库
+CorporateJourneyHub.exe
+data/
+.run/
+.logs/
+.env
+.venv/
+venv/
+node_modules/
+__pycache__/
+*.py[cod]
+*.log
+fail_test.txt
+.pytest_cache/
+.DS_Store
+Thumbs.db
+.workbuddy/
