@@ -1,21 +1,22 @@
 # -*- coding: utf-8 -*-
 """
-企业智行 · Corporate Journey Hub —— 一键启动 · 统一控制台
+企业智行 · Corporate Journey Hub —— 一键启动
 
 设计目标：
   - 双击 start.bat 即用：环境自检 → 依赖增量安装 → 并行后台启动 → 增量健康检查 → 开浏览器
       ★ 默认（无参数）：启动完成即自动关窗，重复双击不会叠窗口
-      ★ 总控台：start.bat menu（或双击 总控台.bat）——状态面板 + 启动/停止/重启/日志一体化
-  - 两种运行模式（一个总控台统管，随时切换）：
+      ★ 三个服务默认合并为**一个进程**（单体模式，端口 8001）
+  - 两种运行模式（随时切换）：
       ★ single（默认）：单体模式 —— services/gateway 把三个服务的 app 装配进**单进程单端口 8001**
       ★ micro        ：微服务模式 —— 行智 8001 / 策程 8002 / 感知 8003 各自独立进程
-  - 命令行模式：python launcher.py [start|menu|stop|restart|status] [single|micro]
+  - 命令行模式：python launcher.py [start|menu|stop|restart|status|clean|fresh] [single|micro]
   - 后端/前端均 detached 后台运行，日志统一落盘 .logs/
   - 启动策略：服务并行拉起（线程池），健康检查逐服务就绪即报，缩短冷启动等待
   - 停止策略：先优雅关闭（不带 /F），2 秒后对残留强杀；覆盖两种模式全部端口，不留孤儿进程
   - 依赖增量检测：requirements.txt 内容变化才重装，启动更快
-  - 停止策略：先优雅关闭（不带 /F），2 秒后对残留强杀
-  - 依赖增量检测：requirements.txt 内容变化才重装，启动更快
+
+日常只需两个入口：双击 `start.bat` 启动、双击 `停止.bat` 停止。
+其余能力（常驻控制台 / 清数据 / 干净启动）仍可通过上面的命令行子命令使用。
 
 实战踩坑（勿删，参照 AI元年 ai-year-launcher skill）：
   1. start.bat 只做纯 ASCII 壳，中文逻辑全放本文件（cmd 按 GBK 解析批处理）。
@@ -714,7 +715,7 @@ def one_shot_start(mode: str = DEFAULT_MODE, enter_menu: bool = False,
 
     默认单体模式（单进程单端口 8001）；默认不驻留窗口（enter_menu=False），
     双击 start.bat 的窗口启动完自动关闭，重复双击不会叠出一堆黑窗。
-    常驻总控台走 `launcher.py menu`（或双击 总控台.bat）。
+    常驻控制台用命令行 `python launcher.py menu`。
     auto_fresh=True 且存在 .cjh_fresh 标记时，启动前自动清空上次运行数据。
     """
     mode = normalize_mode(mode)
@@ -746,7 +747,7 @@ def one_shot_start(mode: str = DEFAULT_MODE, enter_menu: bool = False,
 
         log()
         log(f"  工作台: {APP_URL}")
-        log(f"  {C_DIM}总控台：双击 总控台.bat（启动/停止/日志/状态一体）   停止：双击 停止.bat{C_RESET}")
+        log(f"  {C_DIM}停止服务：双击 停止.bat{C_RESET}")
 
         if enter_menu:
             interactive_menu(mode)

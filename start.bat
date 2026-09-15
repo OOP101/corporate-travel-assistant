@@ -1,8 +1,9 @@
 @echo off
 rem Corporate Journey Hub - one-click start (auto-closes when services are up)
-rem Default: single mode (one process, port 8001). Add "micro" for 3-port mode.
-rem Fresh start (clear previous trips/logs first): start.bat fresh  or double-click 干净启动.bat
-rem Persistent console: double-click 总控台.bat  |  Stop: double-click 停止.bat
+rem Default: single mode - all 3 services run in ONE process, port 8001.
+rem Add "micro" for 3-port mode (8001/8002/8003).
+rem Add "fresh" to clear previous trips/logs before starting.
+rem Stop: double-click the stop script (stop.bat equivalent).
 title Corporate Journey Hub - Start
 setlocal
 set "NODE_OPTIONS="
