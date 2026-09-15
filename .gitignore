@@ -3,7 +3,10 @@ CorporateJourneyHub.exe
 data/
 .run/
 .logs/
+.backup/
+.cjh_fresh
 .env
+.env.bak-*
 .venv/
 venv/
 node_modules/
@@ -12,6 +15,7 @@ __pycache__/
 *.log
 fail_test.txt
 .pytest_cache/
+.pytest_tmp/
 .DS_Store
 Thumbs.db
 .workbuddy/
