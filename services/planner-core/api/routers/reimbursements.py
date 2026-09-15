@@ -9,7 +9,7 @@ from typing import List
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from api import deps
+from .. import deps
 from archive import SummaryGenerator
 
 logger = logging.getLogger("planner-core.reimbursements")

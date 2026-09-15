@@ -9,7 +9,7 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from api.auth import require_admin
+from .auth import require_admin
 from shared.store.base_store import BaseJsonStore
 
 logger = logging.getLogger("journey-hub.admin")

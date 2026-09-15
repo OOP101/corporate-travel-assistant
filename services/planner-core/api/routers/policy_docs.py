@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 
 from shared.embedding import get_embedder
 
-from api import deps
+from .. import deps
 
 router = APIRouter()
 

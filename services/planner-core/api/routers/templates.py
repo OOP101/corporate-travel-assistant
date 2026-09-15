@@ -4,7 +4,7 @@ import copy
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
-from api import deps
+from .. import deps
 
 router = APIRouter()
 

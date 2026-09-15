@@ -12,7 +12,7 @@ from typing import Dict, List
 
 from fastapi import APIRouter, Query
 
-from api import deps
+from .. import deps
 
 logger = logging.getLogger("planner-core.reports")
 
