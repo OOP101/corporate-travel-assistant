@@ -1,7 +1,7 @@
 # 企业智行 Corporate Journey Hub · 进度主线 (PROGRESS)
 
 > 跨会话主线追踪。每次会话开始先读本文件接着干，完成后更新它。
-> 跨会话约定/决策见 `.workbuddy/memory/MEMORY.md`。
+> 跨会话约定/决策见工作区记忆（本地文件 `.workbuddy/memory/MEMORY.md`，不入库）。
 
 ## 阶段总览
 - **P0（可运行）**：✅ 完成 —— 3 服务（journey-hub 8001 / planner-core 8002 / sense-engine 8003）+ React 前端 3001 可跑通。
@@ -11,7 +11,7 @@
 
 ## 本次会话交付：固化未提交成果 + 更正两处落后记录（2026-09-15）
 - **背景**：init commit 之后全部工作（38 文件 / +1961 行）一直堆在工作区未提交，`PROGRESS.md` 却把功能都标成"已交付"——git 里没有对应 commit，误操作即无回退点。本次拆成 7 个语义化提交固化：`dacbdee` 启动基建 → `6cdc1e6` 单体网关 → `7585ec7` 语料层 → `0184c69` 对话流 v2 + 场景化规则 + 政策短路 → `70102f2` 测试同步 → `b97ca83` 文档 → `da6c69a` 仓库卫生。**全部只在本地，未推送**（远端 `origin/main` 仍为 `d7ee0fd`）。
-- **更正 ①：景点知识库不是待做项，已经落地。** 此前 `docs_企业智行/07-改C端-完全验证与简历影响.md` 把「新增景点知识库」判为改 C 端的成本大头/待做项，实际代码里已完成：
+- **更正 ①：景点知识库不是待做项，已经落地。** 此前一份「改 C 端」可行性评估把「新增景点知识库」判为成本大头/待做项，实际代码里已完成：
   - `shared/store/document_store.py::DocumentCorpusStore` —— 把政策文档的「关键词 + 语义」双路检索抽成通用基类，`PolicyDocumentStore` 改为继承（`store/org_store.py` -129 行），两路检索只留一份实现。
   - `services/planner-core/store/guide_store.py::TravelGuideStore` + `api/routers/guides.py`（CRUD / `POST /guides/search` / `POST /guides/reindex`），与政策文档**分开存储**（`data/org/guide_docs` vs 政策文档目录），避免企业政策与个人出游内容混进同一检索空间。
   - `generators/itinerary.py` 已消费该语料（`guide_store.index_missing_embeddings`），为个人出行提供景点门票 / 建议游玩时长 / 预约要求 / 避坑提示等内容依据，不再"只有日程没有内容"。
@@ -19,7 +19,7 @@
 - **更正 ②：方案 C 的 P0「个人出行政策短路」已完成。** 07 号文档判定这是「P0 必做项」（当时结论：`_match_policy` 对非员工取 `level=""`，`get_by_level()` 会把 `level==""` 的通用政策 `pol_139be3c19e59` 纳入候选，**政策预检照样跑**）。现已在 `routers/trips.py:68` 落地：
   - `_POLICY_EXEMPT_SCENES = {"personal"}`；`_policy_exempt_reason()` 同时门控 `_policy_preview()`（生成时预检）与 `_confirm_policy_flow()`（确认后政策检查 + 发起审批），personal 场景两处均直接跳过。
   - 覆盖用例在 `tests/test_json_repair_and_policy.py`：`test_personal_scene_is_exempt_even_for_employee`（员工选个人出游同样豁免）/ `test_non_employee_is_exempt` / `test_business_scenes_still_checked_for_employee` / `test_policy_preview_skipped_when_exempt` / `test_confirm_flow_skipped_when_exempt`。
-- **仓库卫生**：`.env.bak-tokenhub`（含已轮换的旧 TokenHub key `sk-D7I4…`）随 init commit 推到了公开仓库 `github.com/OOP101/corporate-travel-assistant`。已 `git rm --cached` 并在 `.gitignore` 加 `.env.bak-*` 模式堵住同类备份；**旧 key 仍在既往历史中，因已轮换失效故未重写历史**（彻底剥离需 filter-repo + 强推）。求职/调研材料（`docs_企业智行/` 全部 + `docs/简历项目经历-企业智行.md`）已移出版本控制，**本地文件保留**。
+- **仓库卫生**：`.env.bak-tokenhub`（环境变量备份，含第三方 TokenHub key）随 init commit 推到了公开仓库 `github.com/OOP101/corporate-travel-assistant`。已 `git rm --cached` 并在 `.gitignore` 加 `.env.bak-*` 模式堵住同类备份。**移除只对分支 tip 生效——历史提交中仍能检出该文件**：本次未重写历史（该 key 已轮换失效）；若换成仍在用的凭据，须 `filter-repo` + 强推才能彻底剥离。另有一批仅本地使用的材料目录一并移出版本控制（本地文件保留）。
 - **测试基线更新**：`pytest --basetemp=./.pytest_tmp` → **103 passed / 0 failed**（此前记录的 67 已过时）。
 
 ## 本次会话交付（架构）：三服务合并 · 单体模式 + 总控台（2026-09-10 晚）
