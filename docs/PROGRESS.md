@@ -7,7 +7,20 @@
 - **P0（可运行）**：✅ 完成 —— 3 服务（journey-hub 8001 / planner-core 8002 / sense-engine 8003）+ React 前端 3001 可跑通。
 - **P0+（运行形态）**：✅ 完成 —— **单体模式（services/gateway 装配，单进程单端口 8001）+ 总控台**；微服务模式一键切换（2026-09-10）。
 - **P1（企业化闭环）**：✅ 交付 —— 组织/政策/审批/政策文档 后端+前端写完、串链路、有种子数据；生成→政策检查→自动审批→门禁闭环；实时数据「查询直查 / 推送走监控」已落地（2026-09-03）。
-- **P2（深化）**：🟡 进行中 —— 报销 / 报表 / 导出 ✅；SSO / 真向量 RAG 阻塞；**行程规划对话流 v2 已落地（2026-09-10，见下节）**。
+- **P2（深化）**：🟡 进行中 —— 报销 / 报表 / 导出 ✅；SSO / 真向量 RAG 阻塞；**行程规划对话流 v2 已落地（2026-09-10，见下节）**；**景点攻略语料通道 + 个人出行政策短路已落地（2026-09-15，见下节）**。
+
+## 本次会话交付：固化未提交成果 + 更正两处落后记录（2026-09-15）
+- **背景**：init commit 之后全部工作（38 文件 / +1961 行）一直堆在工作区未提交，`PROGRESS.md` 却把功能都标成"已交付"——git 里没有对应 commit，误操作即无回退点。本次拆成 7 个语义化提交固化：`dacbdee` 启动基建 → `6cdc1e6` 单体网关 → `7585ec7` 语料层 → `0184c69` 对话流 v2 + 场景化规则 + 政策短路 → `70102f2` 测试同步 → `b97ca83` 文档 → `da6c69a` 仓库卫生。**全部只在本地，未推送**（远端 `origin/main` 仍为 `d7ee0fd`）。
+- **更正 ①：景点知识库不是待做项，已经落地。** 此前 `docs_企业级旅行服务助手/07-改C端-完全验证与简历影响.md` 把「新增景点知识库」判为改 C 端的成本大头/待做项，实际代码里已完成：
+  - `shared/store/document_store.py::DocumentCorpusStore` —— 把政策文档的「关键词 + 语义」双路检索抽成通用基类，`PolicyDocumentStore` 改为继承（`store/org_store.py` -129 行），两路检索只留一份实现。
+  - `services/planner-core/store/guide_store.py::TravelGuideStore` + `api/routers/guides.py`（CRUD / `POST /guides/search` / `POST /guides/reindex`），与政策文档**分开存储**（`data/org/guide_docs` vs 政策文档目录），避免企业政策与个人出游内容混进同一检索空间。
+  - `generators/itinerary.py` 已消费该语料（`guide_store.index_missing_embeddings`），为个人出行提供景点门票 / 建议游玩时长 / 预约要求 / 避坑提示等内容依据，不再"只有日程没有内容"。
+  - 测试：`tests/test_guide_corpus.py`，含 `test_no_guides_for_business_scene`、`test_retrieve_guides_for_personal`、`test_two_corpuses_do_not_mix` 等场景隔离与不混库用例。
+- **更正 ②：方案 C 的 P0「个人出行政策短路」已完成。** 07 号文档判定这是「P0 必做项」（当时结论：`_match_policy` 对非员工取 `level=""`，`get_by_level()` 会把 `level==""` 的通用政策 `pol_139be3c19e59` 纳入候选，**政策预检照样跑**）。现已在 `routers/trips.py:68` 落地：
+  - `_POLICY_EXEMPT_SCENES = {"personal"}`；`_policy_exempt_reason()` 同时门控 `_policy_preview()`（生成时预检）与 `_confirm_policy_flow()`（确认后政策检查 + 发起审批），personal 场景两处均直接跳过。
+  - 覆盖用例在 `tests/test_json_repair_and_policy.py`：`test_personal_scene_is_exempt_even_for_employee`（员工选个人出游同样豁免）/ `test_non_employee_is_exempt` / `test_business_scenes_still_checked_for_employee` / `test_policy_preview_skipped_when_exempt` / `test_confirm_flow_skipped_when_exempt`。
+- **仓库卫生**：`.env.bak-tokenhub`（含已轮换的旧 TokenHub key `sk-D7I4…`）随 init commit 推到了公开仓库 `github.com/OOP101/corporate-travel-assistant`。已 `git rm --cached` 并在 `.gitignore` 加 `.env.bak-*` 模式堵住同类备份；**旧 key 仍在既往历史中，因已轮换失效故未重写历史**（彻底剥离需 filter-repo + 强推）。求职/调研材料（`docs_企业级旅行服务助手/` 全部 + `docs/简历项目经历-企业智行.md`）已移出版本控制，**本地文件保留**。
+- **测试基线更新**：`pytest --basetemp=./.pytest_tmp` → **103 passed / 0 failed**（此前记录的 67 已过时）。
 
 ## 本次会话交付（架构）：三服务合并 · 单体模式 + 总控台（2026-09-10 晚）
 - 需求：三个后端合并、一个总控台（含停止）。做法：**保留三服务代码与路由，新增装配层网关**，一套代码两种运行模式。
@@ -59,6 +72,7 @@
 | 行程单导出 (export) | ✅ 已完成 | 后端 `GET /trips/{trip_id}/export` 渲染打印友好 HTML；前端「导出行程单」按钮 → 浏览器打印/另存 PDF。零依赖（不装 python-docx）。 |
 | 报销 (reimbursement) | ✅ 已完成 | 提交（自动算额+按直属主管指派审批人）/ 审批 / 打款；前端「报销管理」页。 |
 | 报表 (report) | ✅ 已完成 | overview / by-department / by-month 只读聚合；前端「报表中心」页（KPI + 部门/月度表）。 |
+| 景点攻略语料 (guides) | ✅ 已完成 | `TravelGuideStore` + `/guides`（CRUD / search / reindex）。与政策文档共用 `DocumentCorpusStore` 双路检索能力，但**分开存储**（`data/org/guide_docs`）；供 `personal` 场景的行程生成提供景点内容依据。 |
 | SSO | ⏸ 阻塞 | 等外部 IdP，暂未接入。 |
 | 真向量 RAG 启用 | ⏸ 待条件 | 框架已就位；需开通 embedding 权限或装 sentence-transformers（`BAAI/bge-large-zh-v1.5`，1024 维）。当前运行态为关键词检索（`mode=keyword`）。 |
 
@@ -156,10 +170,14 @@
 - 沙箱坑：Vite 启动需清空 `NODE_OPTIONS`；PyInstaller 构建路径指 `%TEMP%`；`taskkill` 经 Git Bash 参数会被吞，用 Python `subprocess.run(['taskkill','/F','/PID',pid])`。
 
 ## 下一步建议
-1. 用户在 vite 上实测：①聊天生成行程后切菜单再切回（对话/行程卡片应保留）；②生成过程应看到「已生成 X 字」进度 + 人话摘要打字机输出；③底部「清空会话」后刷新页面仍为全新对话；④「导出行程单 / 报销管理 / 报表中心」页面交互。
+1. 用户在 vite 上实测：①聊天生成行程后切菜单再切回（对话/行程卡片应保留）；②生成过程应看到「已生成 X 字」进度 + 人话摘要打字机输出；③「清空会话 / 新对话」后刷新页面仍为全新对话；④「导出行程单 / 报销管理 / 报表中心」页面交互。
 2. 服务端历史仍为进程内，重启即空（跨刷新持久靠 localStorage 快照）。
 3. P2 剩余项均受外部条件阻塞：SSO 等外部 IdP；真向量 RAG 需开通 embedding 权限或 `pip install sentence-transformers`（`BAAI/bge-large-zh-v1.5`，1024 维）。
 4. 可选深化：报表加时间范围过滤（?from=&to=）、导出 CSV/Excel、报销按费用类目透视。
+5. **改 C 端还差三项 P0**（07 号文档分级；`personal` 政策短路已完成，见上节，故四项 P0 只剩这三项）。三项均已逐行核实：
+   - **身份贯通**：`/users/me/*` 的 user_id 取自查询参数 `session_id or getattr(request.state, "workspace_id", "default")`（`api/routers/profiles.py:32/44/56/65`），**完全不读登录态**——不传 `session_id` 时所有用户落到 `"default"` 共享同一份画像。
+   - **Token 持久化**：`AuthService._tokens: dict = {}`（`api/auth.py:55`）存进程内存，服务重启全员掉线。
+   - **自助注册**：`api/auth.py` 只有 `/auth/login` + `/auth/logout` 两个路由，**没有注册接口**，账号靠 `scripts/seed_p1_data.py` 建。
 
 ## 本次会话交付（续）：外部服务接入（腾讯地图 / 和风天气 / 酒店 POI）
 - 触发：用户指出出发地未接地图 API key/未调用、天气工具未在规划链路调用、酒店/美团/携程未集成。核实结论：**全部属实**——`planner-core/**` 对 weather/traffic/geocode/sense 零引用，`shared/state/graph.py` 零引用；地图/和风仅存在于 sense-engine 的监控+问答直查路径且 key 为空（=mock）；酒店零 API 集成。根因：实时数据被设计成 sense-engine 的感知/监控+问答，与 planner 纯生成模块未打通，外部 key 以空串占位+mock 源。
