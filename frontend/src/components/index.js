@@ -9,3 +9,4 @@ export { Card } from './Molecules/Card';
 export { EmptyState } from './Molecules/EmptyState';
 export { StatCard } from './Molecules/StatCard';
 export { PageHeader } from './Molecules/PageHeader';
+export { TripConfirmCard } from './Molecules/TripConfirmCard';

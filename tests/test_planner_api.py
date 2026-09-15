@@ -1,4 +1,5 @@
 """planner-core API 集成测试（FastAPI TestClient，隔离临时数据目录，LLM 走演示降级）"""
+import json
 import os
 import sys
 
@@ -40,6 +41,28 @@ def client(tmp_path, monkeypatch):
         yield c
 
 
+def _parse_sse_events(text: str) -> list:
+    """把 SSE 响应文本解析为事件帧列表（v2 契约：clarify/draft/policy/timing 等）。"""
+    events = []
+    for line in text.split("\n"):
+        if line.startswith("data: ") and line.strip() != "data: [DONE]":
+            try:
+                events.append(json.loads(line[6:]))
+            except json.JSONDecodeError:
+                pass
+    return events
+
+
+def _generate_and_confirm(client, query: str, session_id: str) -> str:
+    """v2 流程辅助：生成草案（未落库）→ 确认落库 → 返回 trip_id。"""
+    r = client.post("/trips/generate", json={"query": query, "session_id": session_id})
+    assert r.status_code == 200
+    draft = next(e for e in _parse_sse_events(r.text) if e.get("event") == "draft")
+    rc = client.post("/trips/confirm", json={"trip": draft["trip"], "session_id": session_id})
+    assert rc.status_code == 200
+    return rc.json()["trip_id"]
+
+
 def test_health(client):
     r = client.get("/health")
     assert r.status_code == 200
@@ -47,15 +70,28 @@ def test_health(client):
 
 
 def test_trip_generate_demo_and_full_lifecycle(client):
-    # 生成（演示模式，SSE 完整响应）
+    # 生成草案（演示模式，SSE 完整响应）——草案阶段不落库（PRD v2 S3/S4）
     r = client.post("/trips/generate", json={"query": "下周去杭州玩两天", "session_id": "it_user"})
     assert r.status_code == 200
-    assert "done" in r.text and "[DONE]" in r.text
+    assert "[DONE]" in r.text
+    events = _parse_sse_events(r.text)
+    draft = next(e for e in events if e.get("event") == "draft")
+    trip = draft["trip"]
+    assert trip["destination"] == "杭州"
+
+    # 草案未落库：列表为空
+    lst = client.get("/trips", params={"session_id": "it_user"}).json()
+    assert lst["count"] == 0
+
+    # 确认（S4 → S5）→ 落库
+    rc = client.post("/trips/confirm", json={"trip": trip, "session_id": "it_user"})
+    assert rc.status_code == 200
+    trip_id = rc.json()["trip_id"]
 
     # 列表可见
     lst = client.get("/trips", params={"session_id": "it_user"}).json()
     assert lst["count"] == 1
-    trip_id = lst["trips"][0]["trip_id"]
+    assert lst["trips"][0]["trip_id"] == trip_id
     assert lst["trips"][0]["user_id"] == "it_user"
 
     # 详情 / 更新
@@ -73,9 +109,14 @@ def test_trip_generate_demo_and_full_lifecycle(client):
     assert client.get(f"/trips/{trip_id}").status_code == 404
 
 
+def test_confirm_rejects_invalid_draft(client):
+    """确认接口拒绝无效草案（缺目的地/标题）。"""
+    r = client.post("/trips/confirm", json={"trip": {}, "session_id": "x"})
+    assert r.status_code == 400
+
+
 def test_trip_ownership_denied_for_other_session(client):
-    client.post("/trips/generate", json={"query": "去北京出差", "session_id": "owner"})
-    trip_id = client.get("/trips", params={"session_id": "owner"}).json()["trips"][0]["trip_id"]
+    trip_id = _generate_and_confirm(client, "去北京出差", "owner")
 
     r = client.get(f"/trips/{trip_id}", params={"session_id": "intruder"})
     assert r.status_code == 404  # 他人访问按 404 拒绝
@@ -102,8 +143,7 @@ def test_policies_crud_and_match_reachable(client):
 
 def test_check_policy_violations(client):
     pol = client.post("/policies", json={"name": "限额政策", "hotel_limit": 100}).json()["policy_id"]
-    client.post("/trips/generate", json={"query": "去成都玩三天", "session_id": "pol_user"})
-    trip_id = client.get("/trips", params={"session_id": "pol_user"}).json()["trips"][0]["trip_id"]
+    trip_id = _generate_and_confirm(client, "去成都玩三天", "pol_user")
 
     r = client.post("/policies/check", params={"trip_id": trip_id, "policy_id": pol})
     assert r.status_code == 200
@@ -118,8 +158,7 @@ def test_approval_create_validates_references(client):
 
 
 def test_template_save_and_apply(client):
-    client.post("/trips/generate", json={"query": "去西安玩四天", "session_id": "tpl_user"})
-    trip_id = client.get("/trips", params={"session_id": "tpl_user"}).json()["trips"][0]["trip_id"]
+    trip_id = _generate_and_confirm(client, "去西安玩四天", "tpl_user")
 
     saved = client.post(f"/trips/{trip_id}/template", json={"template_name": "西安四日", "tags": ["西安"]}).json()
     assert saved["status"] == "ok"

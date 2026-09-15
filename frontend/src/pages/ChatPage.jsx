@@ -6,7 +6,7 @@ import {
 } from 'lucide-react';
 import { listModels } from '../api/auth';
 import { chatStore, GREETING } from '../store/chatStore';
-import { Badge } from '../components';
+import { Badge, TripConfirmCard } from '../components';
 
 const INTENT_LABELS = {
   plan: { label: '行程规划', tone: 'primary' },
@@ -14,6 +14,10 @@ const INTENT_LABELS = {
   manage: { label: '行程管理', tone: 'purple' },
   emergency: { label: '应急协助', tone: 'red' },
 };
+
+// v2 澄清选项（PRD §6.2）：缺场景时展示可点选项；日期等由用户文字补充
+const CLARIFY_SCENE_OPTIONS = ['商务出差', '会议参展', '客户拜访', '团队出行', '个人出游'];
+const CLARIFY_FALLBACK_LABEL = '你看着办，按常见差旅默认补全';
 
 const SUGGESTIONS = [
   { icon: Plane, text: '9月15号广州飞北京出差，16号上午拜访国贸客户，17号下午返程' },
@@ -56,6 +60,7 @@ export default function ChatPage() {
   const [model, setModel] = useState('hy-mt2-pro');
   const [modelOptions, setModelOptions] = useState(FALLBACK_MODELS);
   const scrollRef = useRef(null);
+  const inputRef = useRef(null);
 
   const store = chatStore.get();
   const messages = store.messages || [GREETING];
@@ -218,6 +223,55 @@ export default function ChatPage() {
                       )}
                     </div>
 
+                    {/* 方案确认卡（S4）：草案未落库，确认后才提交审批 */}
+                    {!isUser && !loading && msg.draft?.trip && (
+                      <TripConfirmCard
+                        trip={msg.draft.trip}
+                        defaulted={msg.draft.defaulted}
+                        busy={loading}
+                        onConfirm={(trip) => chatStore.confirmDraft(trip)}
+                        onEdit={() => {
+                          const seed = chatStore.editDraft();
+                          if (seed) {
+                            setInput(seed);
+                            inputRef.current?.focus();
+                          }
+                        }}
+                        onCancel={() => chatStore.cancelDraft()}
+                      />
+                    )}
+
+                    {/* 澄清选项 chips（S2）：缺场景时给可点选项 + 授权代填入口 */}
+                    {!isUser && !loading && msg.clarify && (
+                      <div className="mt-2">
+                        <div className="flex flex-wrap gap-1.5">
+                          {(msg.clarify.missing || []).includes('scene') &&
+                            CLARIFY_SCENE_OPTIONS.map((s) => (
+                              <button
+                                key={s}
+                                onClick={() => sendText(s)}
+                                className="px-3 py-1.5 text-xs rounded-full bg-white border border-primary-200 text-primary-700 hover:bg-primary-50 transition-colors"
+                              >
+                                {s}
+                              </button>
+                            ))}
+                        </div>
+                        <div className="flex flex-wrap gap-1.5 mt-1.5">
+                          <button
+                            onClick={() => sendText('你看着办，按常见差旅默认补全')}
+                            className="px-3 py-1.5 text-xs rounded-full bg-white border border-gray-200 text-ink-500 hover:border-primary-300 hover:text-primary-600 transition-colors"
+                          >
+                            {CLARIFY_FALLBACK_LABEL}
+                          </button>
+                        </div>
+                        {(msg.clarify.missing || []).some((k) => k === 'start_date' || k === 'days') && (
+                          <p className="mt-1.5 text-[11px] text-ink-400">
+                            日期可直接回复，如「9/15 到 9/17」「下周一出发，3 天」
+                          </p>
+                        )}
+                      </div>
+                    )}
+
                     {/* 卡片式回答 */}
                     {!isUser && msg.cards?.length > 0 && (
                       <div className="mt-2 space-y-2">
@@ -306,6 +360,7 @@ export default function ChatPage() {
             ))}
           </select>
           <textarea
+            ref={inputRef}
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKey}

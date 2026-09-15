@@ -70,7 +70,7 @@ class ToolHandlers:
         try:
             frames = list(self.plan_trip_stream(query, session_id, state))
             text = "".join(
-                (f.get("content", "") if isinstance(f, dict) and f.get("kind") == "text"
+                (f.get("content", "") if isinstance(f, dict) and f.get("kind") in ("text", "clarify")
                  else (f if isinstance(f, str) else ""))
                 for f in frames
             )
@@ -93,29 +93,32 @@ class ToolHandlers:
         session_id: str = "default",
         state: Dict[str, Any] = None,
     ):
-        """流式版行程规划：产出结构化事件帧（dict），前端按帧类型渲染。
+        """流式版行程规划（v2 四态：clarify → generate 草案 → confirm → done）。
 
         帧约定:
-          {"kind": "progress", "content": str}  生成过程提示（不进最终正文）
-          {"kind": "text",     "content": str}  人类可读行程摘要/政策/审批结果（流式入正文）
+          {"kind": "progress", "content": str}                     生成过程提示（不进最终正文）
+          {"kind": "clarify",  "content": str, "missing": [...], "params": {...}}
+                                                                   S2 澄清反问（附缺参清单，前端渲染选项）
+          {"kind": "draft",    "trip": {...}, "defaulted": [...]}  S3 草案（未落库，前端渲染确认卡）
+          {"kind": "text",     "content": str}                     人类可读摘要/政策预检/耗时（流式入正文）
 
-        设计取舍：planner 下行的 chunk 是「行程 JSON 原始文本」，直接透传会把原始
-        JSON 暴露到聊天正文（观感差）；这里只把 raw 节奏折算为 progress 提示，
-        等 planner 完成解析后再将格式化摘要以文本帧流式输出。
+        v2 语义：planner 生成的是「草案」，未落库、未审批；用户确认后由
+        confirm_trip → planner POST /trips/confirm 完成落库与审批。
         """
         try:
-            done_event = None
             policy_line = ""
-            approval_line = ""
             timing_line = ""
             raw_len = 0
             last_report = 0
+            got_result = False
             for event in self.client.post_stream(
                 f"{self.planner_url}/trips/generate",
                 json={
                     "query": query,
                     "session_id": session_id,
                     "model": (state or {}).get("model"),
+                    "params": (state or {}).get("plan_params") or {},
+                    "carry": (state or {}).get("plan_carry") or {},
                 },
                 timeout=300,  # 行程生成（含推理模型思考）耗时长，避免中途读超时
             ):
@@ -131,35 +134,48 @@ class ToolHandlers:
                             "kind": "progress",
                             "content": f"行程内容生成中…已生成 {raw_len} 字",
                         }
+                elif ev == "clarify":
+                    # S2 澄清：必填缺失，本次不生成
+                    yield {
+                        "kind": "clarify",
+                        "content": event.get("content", ""),
+                        "missing": event.get("missing", []),
+                        "params": event.get("params", {}),
+                    }
+                    got_result = True
+                    return
                 elif ev == "error":
                     yield {"kind": "text", "content": f"❌ 行程生成失败：{event.get('content', '未知错误')}"}
                     return
                 elif ev == "policy":
                     mark = "⚠️" if event.get("has_violations") else "✅"
-                    policy_line = f"\n{mark} 政策检查：{event.get('content', '')}"
-                elif ev == "approval":
-                    approval_line = f"\n🖊️ {event.get('content', '')}"
+                    policy_line = f"\n{mark} 政策预检：{(event.get('content') or '').replace('政策预检：', '')}"
+                elif ev == "draft":
+                    # S3 草案：未落库未审批，交前端渲染确认卡
+                    yield {
+                        "kind": "draft",
+                        "trip": event.get("trip") or {},
+                        "defaulted": event.get("defaulted") or [],
+                        "params": event.get("params") or {},
+                    }
+                    got_result = True
+                    # 人话摘要 + [代填] 标注 + 确认引导（文本流）
+                    summary = self._format_draft_summary(event, policy_line)
+                    for piece in self._chunk_text(summary, 60):
+                        yield {"kind": "text", "content": piece}
+                        time.sleep(0.02)
                 elif ev == "timing":
                     # 埋点透传：planner 各阶段耗时，供用户/排查直接看到时间花在哪
                     timing_line = self._format_timing(event)
-                elif ev == "done":
-                    done_event = event
-                    # done 帧后还有 policy/approval 帧，继续消费到流结束
 
-            if not done_event:
-                yield {"kind": "text", "content": "行程生成未返回结果，请稍后重试。"}
+            if not got_result:
+                yield {"kind": "text", "content": "行程草案未返回结果，请稍后重试。"}
                 return
 
-            summary = self._format_trip_summary(done_event)
-            for piece in self._chunk_text(summary, 60):
-                yield {"kind": "text", "content": piece}
-                time.sleep(0.02)  # 轻微打字机节奏，避免整段瞬发
-            if policy_line:
-                yield {"kind": "text", "content": policy_line}
-            if approval_line:
-                yield {"kind": "text", "content": approval_line}
             if timing_line:
                 yield {"kind": "text", "content": timing_line}
+            # 摘要与政策预检已在 draft 分支输出；此处仅收尾
+            return
         except Exception as e:
             logger.warning(f"planner-core 不可用: {e}")
             yield {
@@ -170,6 +186,55 @@ class ToolHandlers:
                     "我会先为您整理一份初步建议。"
                 ),
             }
+
+    def confirm_trip(
+        self,
+        session_id: str = "default",
+        trip: Dict[str, Any] = None,
+        state: Dict[str, Any] = None,
+    ) -> Dict[str, Any]:
+        """S4 → S5：用户确认草案后，调 planner POST /trips/confirm 落库 + 政策 + 审批。
+
+        Returns:
+            dict: {success, message, trip_id, trip, events}
+        """
+        if not trip:
+            return {"success": False, "message": "没有待确认的行程草案。", "trip_id": None}
+        try:
+            resp = self.client.post(
+                f"{self.planner_url}/trips/confirm",
+                json={"trip": trip, "session_id": session_id},
+            )
+            events = resp.get("events") or []
+            policy_line = ""
+            approval_line = ""
+            for e in events:
+                if e.get("event") == "policy":
+                    mark = "⚠️" if e.get("has_violations") else "✅"
+                    policy_line = f"\n{mark} 政策检查：{e.get('content', '')}"
+                elif e.get("event") == "approval":
+                    approval_line = f"\n🖊️ {e.get('content', '')}"
+            trip_id = resp.get("trip_id", "")
+            title = (resp.get("trip") or {}).get("title", "")
+            message = f"✅ 行程「{title}」已确认保存（编号 {trip_id}）"
+            if trip_id:
+                message += f"\n🧳 行程编号：{trip_id}"
+            if policy_line:
+                message += policy_line
+            if approval_line:
+                message += approval_line
+            if not approval_line:
+                message += "\n（按当前政策无需审批或缺少审批人，行程直接生效）"
+            return {
+                "success": True,
+                "message": message,
+                "trip_id": trip_id,
+                "trip": resp.get("trip") or trip,
+                "events": events,
+            }
+        except Exception as e:
+            logger.warning(f"确认行程失败: {e}")
+            return {"success": False, "message": "行程确认失败，请稍后重试。", "trip_id": None}
 
     @staticmethod
     def _chunk_text(text: str, width: int = 60):
@@ -225,6 +290,75 @@ class ToolHandlers:
         model = event.get("model")
         model_tag = f" [{model}]" if model and model != "default" else ""
         return f"\n⏱️ 耗时：{' · '.join(parts)}{tail}{head}{model_tag}"
+
+    @staticmethod
+    def _format_draft_summary(draft_event: dict, policy_line: str = "") -> str:
+        """把 planner draft 事件格式化为「方案草案确认」摘要（PRD v2 S4）。
+
+        代填项带 [代填] 标注；酒店为腾讯地图真实 POI 候选；结尾给确认引导。
+        """
+        trip = draft_event.get("trip") or {}
+        defaulted = draft_event.get("defaulted") or []
+        params = draft_event.get("params") or {}
+        days = trip.get("days", []) or []
+
+        scene_names = {
+            "business": "商务出差", "meeting": "会议参展", "visit": "客户拜访",
+            "team": "团队出行", "personal": "个人出游",
+        }
+        scene = trip.get("scene") or params.get("scene") or ""
+        scene_label = scene_names.get(scene, scene) if scene else ""
+
+        lines = ["📋 行程方案草案（未提交，请确认）"]
+        if trip.get("title"):
+            lines.append(f"标题：{trip['title']}")
+        if scene_label:
+            lines.append(f"场景：{scene_label}")
+        dates = " ~ ".join(x for x in [trip.get("start_date"), trip.get("end_date")] if x)
+        if dates:
+            suffix = f"（{len(days)} 天）" if days else ""
+            lines.append(f"日期：{dates}{suffix}")
+        if trip.get("destination"):
+            lines.append(f"目的地：{trip['destination']}")
+        if trip.get("origin"):
+            lines.append(f"出发地：{trip['origin']}")
+        party = trip.get("travel_party") or []
+        if party:
+            names = "、".join(
+                (p.get("name") or p.get("role") or "") if isinstance(p, dict) else str(p)
+                for p in party
+            )
+            if names:
+                lines.append(f"出行人：{names}")
+        budget = trip.get("budget_total")
+        if budget:
+            lines.append(f"预算：¥{float(budget):,.0f}")
+        hotels = trip.get("hotel_options") or []
+        if hotels:
+            main = hotels[0]
+            extra = f"（另有 {len(hotels) - 1} 家备选，确认页可换）" if len(hotels) > 1 else ""
+            addr = f"（{main.get('address')}）" if main.get("address") else ""
+            lines.append(f"酒店建议：{main.get('name', '')}{addr}{extra} · 价格以预订平台为准")
+
+        # 代填项显式标注（PRD v2 §4.1：代填值必须展示给用户确认）
+        for d in defaulted:
+            field_names = {
+                "num_adults": "人数", "budget_total": "预算", "origin": "出发地",
+            }
+            name = field_names.get(d.get("field"), d.get("field"))
+            lines.append(f"[代填] {name}：{d.get('note', '')}")
+
+        for i, d in enumerate(days, 1):
+            date = d.get("date", "")
+            theme = d.get("theme", "")
+            acts = d.get("activities", []) or []
+            label = " / ".join(x for x in [date, theme] if x)
+            lines.append(f"  · Day {i} {label}（{len(acts)} 项活动）")
+
+        if policy_line:
+            lines.append(policy_line.strip())
+        lines.append("👇 请确认：回复「确认」提交审批，或直接说出要调整的内容重新生成。")
+        return "\n".join(lines)
 
     @staticmethod
     def _format_trip_summary(done_event: dict) -> str:

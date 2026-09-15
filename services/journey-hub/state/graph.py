@@ -10,8 +10,15 @@ LangGraph StateGraph —— 行智 · Journey Hub 核心编排器
 
 流程：
   USER → route → [plan→respond] [chat→respond] [manage→respond]
+
+v2 行程规划对话流（PRD 行程规划对话流程-v2）：
+  plan 意图按会话阶段四态流转（阶段存于 SessionManager metadata plan_stage）：
+    ""       → 首轮：planner 抽参 → 缺参发 clarify（进入 clarify 阶段）/ 信息齐发 draft（进入 confirm 阶段）
+    clarify  → 用户补充答案直通规划（合并后重新抽参）
+    confirm  → 用户「确认」→ confirm_trip 落库+审批；「取消」→ 终止；其他 → 视为修改重新生成
 """
 import logging
+import re
 from typing import Literal, Dict, Any, Generator
 
 from langgraph.graph import StateGraph, END
@@ -259,9 +266,39 @@ class JourneyHubGraph:
             {"event": "intent", "content": <intent>}
             {"event": "progress", "content": <生成过程提示>}   （plan 意图阶段提示）
             {"event": "chunk",  "content": <文本片段>}   （chat 逐 token / plan 逐段摘要）
+            {"event": "clarify", "missing": [...], "params": {...}} （S2 澄清反问，前端渲染选项）
+            {"event": "confirm", "trip": {...}, "defaulted": [...]} （S4 方案确认卡，草案未落库）
+            {"event": "trip_saved", "trip_id": ..., "trip": {...}}  （S5 确认完成，已落库）
             {"event": "respond", "content": <完整回复>}  （兼容前端整体替换契约）
         """
+        # v2 阶段路由：clarify 阶段的用户输入是澄清答案，直通规划；
+        # confirm 阶段按「确认 / 取消 / 修改」分流
+        stage = self.sessions.get_metadata(session_id, "plan_stage") or ""
+
+        if stage == "confirm":
+            text = (user_input or "").strip()
+            if re.search(r"确认|确定|同意|提交|ok", text, re.I) and len(text) <= 12:
+                yield {"event": "intent", "content": "plan"}
+                async_result = self._confirm_pending_draft(session_id)
+                yield from async_result
+                return
+            if re.search(r"取消|不确认|先不|算了|不要了", text) and len(text) <= 12:
+                yield {"event": "intent", "content": "plan"}
+                self.sessions.set_metadata(session_id, "plan_stage", "")
+                self.sessions.set_metadata(session_id, "pending_draft", None)
+                full = "好的，已取消本次行程方案，草案未提交、未落库。需要重新规划时随时告诉我。"
+                yield {"event": "chunk", "content": full}
+                self.sessions.append(session_id, "user", user_input)
+                self.sessions.append(session_id, "assistant", full)
+                yield {"event": "respond", "content": full}
+                return
+            # 其他输入视为修改参数 → 清阶段，走重新生成
+            self.sessions.set_metadata(session_id, "plan_stage", "")
+
         intent = IntentRouter().classify(user_input)
+        if stage == "clarify":
+            # 澄清答案（如「商务出差 9/7 到 9/9」）按规划意图处理
+            intent = Intent.PLAN
         yield {"event": "intent", "content": intent.value}
 
         # chat 意图且 LLM 可用 → 真流式（与 chat_query 相同的 prompt 组装）
@@ -298,20 +335,57 @@ class JourneyHubGraph:
             yield {"event": "respond", "content": full}
             return
 
-        # plan 意图 → 流式透传规划进度、行程摘要与政策/审批结果
+        # plan 意图 → 流式透传规划进度、草案摘要与澄清/确认结构化帧
         if intent == Intent.PLAN:
             handler = self.tools.get_handler("plan_trip_stream") or self.tools.get_handler("plan_trip")
             full = ""
             if handler is not None:
                 try:
                     for frame in handler(
-                        query=user_input, session_id=session_id, state={"model": model}
+                        query=user_input, session_id=session_id,
+                        state={
+                            "model": model,
+                            # 澄清轮次续用：上轮已抽取参数随请求透传，避免多轮上下文丢失
+                            "plan_carry": self.sessions.get_metadata(session_id, "plan_carry") or {},
+                        },
                     ):
-                        # 结构化帧：progress → 生成过程提示；text/str → 进入正文流
-                        if isinstance(frame, dict) and frame.get("kind") == "progress":
+                        if not isinstance(frame, dict):
+                            full += str(frame)
+                            yield {"event": "chunk", "content": str(frame)}
+                            continue
+                        kind = frame.get("kind")
+                        if kind == "progress":
                             yield {"event": "progress", "content": frame.get("content", "")}
+                        elif kind == "clarify":
+                            # S2 澄清：记录阶段与已抽参数（下轮 carry 续用），前端据此渲染可点选项
+                            self.sessions.set_metadata(session_id, "plan_stage", "clarify")
+                            self.sessions.set_metadata(session_id, "plan_carry", frame.get("params") or {})
+                            count = self.sessions.get_metadata(session_id, "clarify_count", 0) or 0
+                            self.sessions.set_metadata(session_id, "clarify_count", count + 1)
+                            content = frame.get("content", "")
+                            full += content
+                            yield {
+                                "event": "clarify",
+                                "content": content,
+                                "missing": frame.get("missing", []),
+                                "params": frame.get("params", {}),
+                                "round": count + 1,
+                            }
+                            yield {"event": "chunk", "content": content}
+                        elif kind == "draft":
+                            # S3 草案：挂起待确认（未落库未审批），进入 confirm 阶段，carry 用毕清除
+                            trip = frame.get("trip") or {}
+                            self.sessions.set_metadata(session_id, "plan_stage", "confirm")
+                            self.sessions.set_metadata(session_id, "pending_draft", trip)
+                            self.sessions.set_metadata(session_id, "plan_carry", None)
+                            self.sessions.set_metadata(session_id, "clarify_count", 0)
+                            yield {
+                                "event": "confirm",
+                                "trip": trip,
+                                "defaulted": frame.get("defaulted", []),
+                            }
                         else:
-                            content = frame.get("content", "") if isinstance(frame, dict) else str(frame)
+                            content = frame.get("content", "")
                             full += content
                             yield {"event": "chunk", "content": content}
                 except Exception as e:
@@ -327,6 +401,47 @@ class JourneyHubGraph:
         # manage / emergency / chat 兜底 → 复用完整图
         result = self.invoke(session_id=session_id, user_input=user_input, model=model)
         yield {"event": "respond", "content": result.get("response", "")}
+
+    # ------------------------------------------------------------------
+    # v2：草案确认（S4 → S5）
+    # ------------------------------------------------------------------
+    def _confirm_pending_draft(self, session_id: str) -> Generator[Dict[str, Any], None, None]:
+        """用户在 confirm 阶段回复「确认」：调 planner /trips/confirm 落库 + 审批。"""
+        trip = self.sessions.get_metadata(session_id, "pending_draft")
+        self.sessions.set_metadata(session_id, "plan_stage", "")
+        self.sessions.set_metadata(session_id, "pending_draft", None)
+
+        handler = self.tools.get_handler("confirm_trip")
+        result = None
+        if handler is not None:
+            try:
+                result = handler(session_id=session_id, trip=trip)
+            except Exception as e:
+                logger.warning(f"确认行程失败: {e}")
+        if not result or not result.get("success"):
+            full = (result or {}).get("message") or "行程确认失败，请稍后重试。"
+            yield {"event": "chunk", "content": full}
+        else:
+            full = result.get("message", "")
+            yield {
+                "event": "trip_saved",
+                "trip_id": result.get("trip_id"),
+                "trip": result.get("trip") or {},
+            }
+            for piece in self._split_text(full, 60):
+                yield {"event": "chunk", "content": piece}
+        self.sessions.append(session_id, "user", "确认")
+        self.sessions.append(session_id, "assistant", full)
+        yield {"event": "respond", "content": full}
+
+    @staticmethod
+    def _split_text(text: str, width: int = 60):
+        """打字机分段（与 handlers._chunk_text 同规则，graph 侧独立实现避免循环依赖）。"""
+        while len(text) > width:
+            yield text[:width]
+            text = text[width:]
+        if text:
+            yield text
 
     # ------------------------------------------------------------------
     # 同步调用入口

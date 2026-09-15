@@ -9,12 +9,15 @@
  */
 
 const initialState = {
-  status: 'idle', // idle | analyzing | generating | done | error
+  status: 'idle', // idle | analyzing | generating | clarify | draft | confirming | done | error
   query: '',
   statusText: '',
   text: '', // 流式累计的行程文本
   tripId: null,
   trip: null,
+  defaulted: [], // v2：代填项记录（确认卡 [代填] 标注）
+  policy: null, // v2：政策预检结果（草案阶段仅预警）
+  missing: [], // v2：澄清缺参清单
   error: null,
 };
 

@@ -12,7 +12,7 @@ from shared.sse import SSE_DONE, sse_frame, sse_stream_response
 
 from generators import ItineraryGenerator
 from archive import SummaryGenerator
-from api import deps
+from .. import deps
 
 logger = logging.getLogger("planner-core.trips")
 
@@ -27,6 +27,13 @@ class GenerateTripRequest(BaseModel):
     session_id: str = Field(default="default")
     preferences: dict = Field(default_factory=dict)
     model: Optional[str] = Field(default=None, description="LLM 模型名（可选，缺省用 .env 配置）")
+    params: dict = Field(default_factory=dict, description="用户已确认的结构化参数（scene/日期等，优先级高于抽取）")
+    carry: dict = Field(default_factory=dict, description="澄清轮次已抽取的参数（低优先级续用）")
+
+
+class ConfirmTripRequest(BaseModel):
+    trip: dict = Field(..., description="确认的行程草案（/trips/generate 的 draft 帧 trip 字段）")
+    session_id: str = Field(default="default")
 
 
 class UpdateTripRequest(BaseModel):
@@ -57,24 +64,88 @@ def _deny_if_not_owner(trip: dict, session_id: str = ""):
         raise HTTPException(404, f"行程不存在: {trip.get('trip_id')}")
 
 
-def _post_generate_policy_flow(trip_dict: dict, trip_id: str, user_id: str) -> list:
-    """行程生成后的 P1 链路：政策检查 → 超标提示 → 审批自动发起。
+# 免做企业差旅政策检查的场景（个人出游为 C 端场景，与差旅政策无关）
+_POLICY_EXEMPT_SCENES = {"personal"}
+
+
+def _policy_exempt_reason(trip_dict: dict, user_id: str) -> str:
+    """判断本次行程是否免做政策检查与审批；返回免检原因，空串表示需要检查。
+
+    两类豁免（见 docs_企业级旅行服务助手/07-改C端-完全验证与简历影响.md §2.5/§2.6）：
+
+    1. **个人出游场景** —— 与「企业差旅政策」无关，不该出现职级限额与审批门禁。
+    2. **无员工档案的用户** —— 没有职级可匹配，套用通用政策没有意义。
+
+    为什么必须显式短路：`_match_policy()` 对非员工取 `level=""`，而
+    `PolicyStore.get_by_level()` 会把 `level==""` 的**通用政策**纳入任意职级候选
+    （种子里的 pol_139be3c19e59 正是 level=""）。于是政策预检照样会跑：
+      - 通用政策限额为 0 时，用户会看到一句「政策预检通过」——企业术语漏进个人行程；
+      - 通用政策若填了真实额度，个人出游会被误判「住宿 ¥X 超过标准 ¥Y」。
+    审批侧则因 `employee` 为空而不发起，可政策又写着 `requires_approval=True`，
+    形成「说必须审批、实际无人审批、行程照样生效」的哑雷。
+    """
+    scene = str((trip_dict or {}).get("scene") or "").strip().lower()
+    if scene in _POLICY_EXEMPT_SCENES:
+        return f"场景「{scene}」为个人出游，不适用企业差旅政策"
+    if deps.employee_store is not None and not deps.employee_store.get(user_id):
+        return f"用户 {user_id} 无员工档案，无可匹配的职级政策"
+    return ""
+
+
+def _match_policy(trip_dict: dict, user_id: str):
+    """按 user_id（员工 ID）职级匹配差旅政策；解析不到员工按通用政策。"""
+    if deps.policy_store is None:
+        return None
+    employee = deps.employee_store.get(user_id) if deps.employee_store else None
+    level = (employee or {}).get("level", "")
+    return deps.policy_store.get_best_match(level)
+
+
+def _policy_preview(trip_dict: dict, user_id: str) -> dict:
+    """政策预检（S4 确认页预警用）——只检查不审批（PRD v2：审批绝不先于用户确认）。"""
+    exempt = _policy_exempt_reason(trip_dict, user_id)
+    if exempt:
+        logger.info(f"跳过政策预检：{exempt}")
+        return {}
+    policy = _match_policy(trip_dict, user_id)
+    if not policy:
+        return {}
+    try:
+        violations = deps.policy_store.check_violations(trip_dict, policy)
+        return {
+            "event": "policy",
+            "policy_id": policy.get("policy_id", ""),
+            "policy_name": policy.get("name", ""),
+            "violations": violations,
+            "has_violations": len(violations) > 0,
+            "content": (
+                f"政策预检：{len(violations)} 项超标" if violations else "政策预检通过"
+            ),
+        }
+    except Exception as e:
+        logger.warning(f"政策预检失败: {e}")
+        return {}
+
+
+def _confirm_policy_flow(trip_dict: dict, trip_id: str, user_id: str) -> list:
+    """用户确认后的 P1 链路（S5）：政策检查 → 超标提示 → 审批发起。
 
     员工解析：user_id 恰为员工 ID 时按其职级匹配政策；解析不到员工时仍做
     政策匹配与提示（按通用政策），但审批因缺少审批人不自动发起。
 
     Returns:
-        待追加到 SSE 流的事件帧列表：
-          {"event": "policy",  ...}  政策检查结果
-          {"event": "approval", ...} 自动创建的审批单
+        事件列表：{"event": "policy", ...} / {"event": "approval", ...}
     """
     events = []
+    exempt = _policy_exempt_reason(trip_dict, user_id)
+    if exempt:
+        logger.info(f"跳过确认后政策/审批链路：{exempt}")
+        return events
     if deps.policy_store is None:
         return events
     try:
         employee = deps.employee_store.get(user_id) if deps.employee_store else None
-        level = (employee or {}).get("level", "")
-        policy = deps.policy_store.get_best_match(level)
+        policy = _match_policy(trip_dict, user_id)
         if not policy:
             return events
 
@@ -91,11 +162,18 @@ def _post_generate_policy_flow(trip_dict: dict, trip_id: str, user_id: str) -> l
             ),
         })
 
-        # 审批自动发起：政策要求审批或预算达到阈值
+        # 审批发起：政策要求审批或预算达到阈值（仅在用户确认后由 confirm 调用）
         budget = float(trip_dict.get("budget_total", 0) or 0)
         threshold = float(policy.get("approval_threshold", 0) or 0)
         needs_approval = policy.get("requires_approval", False) or (threshold > 0 and budget >= threshold)
         approver_id = (employee or {}).get("manager_id", "")
+        remark_scene = trip_dict.get("scene") or ""
+        remark_purpose = trip_dict.get("purpose") or ""
+        remark = "用户确认后发起"
+        if remark_scene:
+            remark += f" · 场景：{remark_scene}"
+        if remark_purpose:
+            remark += f" · 事由：{remark_purpose}"
         if needs_approval and employee and approver_id and deps.approval_store:
             if not deps.employee_store.get(approver_id):
                 logger.warning(f"审批人不存在，跳过自动审批: {approver_id}")
@@ -107,7 +185,7 @@ def _post_generate_policy_flow(trip_dict: dict, trip_id: str, user_id: str) -> l
                     "total_amount": budget,
                     "policy_id": policy.get("policy_id", ""),
                     "violations": violations,
-                    "remark": "行程生成后自动发起",
+                    "remark": remark,
                     "status": "pending",
                 }
                 approval_id = deps.approval_store.save(approval)
@@ -116,27 +194,31 @@ def _post_generate_policy_flow(trip_dict: dict, trip_id: str, user_id: str) -> l
                     "approval_id": approval_id,
                     "approver_id": approver_id,
                     "has_violations": len(violations) > 0,
-                    "content": f"已自动发起审批（审批人：{(deps.employee_store.get(approver_id) or {}).get('name', approver_id)}）",
+                    "content": f"已发起审批（审批人：{(deps.employee_store.get(approver_id) or {}).get('name', approver_id)}）",
                 })
     except Exception as e:
-        # 政策/审批是增强链路，失败不阻断行程生成
-        logger.warning(f"生成后政策/审批链路失败: {e}")
+        # 政策/审批是增强链路，失败不阻断行程确认
+        logger.warning(f"确认后政策/审批链路失败: {e}")
     return events
 
 
 # ---------------------------------------------------------------------------
-# 行程生成 (SSE 流式)
+# 行程生成 (SSE 流式) —— v2：澄清 / 草案两态，确认后才落库审批（POST /trips/confirm）
 # ---------------------------------------------------------------------------
 @router.post("/trips/generate", tags=["行程生成"])
 async def generate_trip(req: GenerateTripRequest, request: Request):
     """
-    流式生成行程 (SSE)
+    流式生成行程方案草案 (SSE) —— v2 语义
 
     事件帧:
-      event: status  → 正在分析...
-      event: chunk   → 行程 JSON 文本片段
-      event: done    → 生成完成，返回完整行程
-      event: error   → 错误
+      event: status   → 正在分析...
+      event: clarify  → 必填参数缺失（scene/目的地/日期天数），附缺参清单，本次不生成
+      event: chunk    → 行程 JSON 文本片段
+      event: policy   → 政策预检结果（仅预警，不触发审批）
+      event: draft    → 草案生成完成（未落库），附 trip / defaulted（代填项）/ params
+      event: error    → 错误
+
+    草案经用户确认后调 POST /trips/confirm 落库并触发审批。
     """
     if deps.llm_manager is None or deps.trip_store is None:
         raise HTTPException(503, "服务未就绪")
@@ -144,7 +226,7 @@ async def generate_trip(req: GenerateTripRequest, request: Request):
     user_id = req.session_id or getattr(request.state, "workspace_id", "default")
 
     # 每次请求独立生成器实例：并发请求的 model 选择与解析结果互不干扰
-    gen = ItineraryGenerator(deps.llm_manager)
+    gen = ItineraryGenerator(deps.llm_manager, guide_store=deps.guide_store)
     gen.model = req.model  # 前端选择的模型（可选）
 
     def generate():
@@ -153,44 +235,55 @@ async def generate_trip(req: GenerateTripRequest, request: Request):
             api_started_at = time.monotonic()
 
             with trip_generation_duration.labels(status="generate").time():
-                for chunk in gen.generate_stream(req.query, req.preferences):
+                for chunk in gen.generate_stream(req.query, req.preferences, req.params, req.carry):
                     yield sse_frame({"event": "chunk", "content": chunk})
 
             # 生成中途出错（已降级演示行程）：发独立 error 帧，不混入行程 JSON
             if getattr(gen, "last_error", None):
                 yield sse_frame({"event": "error", "content": gen.last_error})
 
-            # 获取解析后的行程并存储
+            # S2 澄清：必填参数缺失（scene/目的地/日期天数）→ 发 clarify 帧，不生成不落库
+            missing = getattr(gen, "last_missing", None) or []
+            if missing:
+                params = getattr(gen, "last_params", {}) or {}
+                yield sse_frame({
+                    "event": "clarify",
+                    "missing": missing,
+                    "params": params,
+                    "content": ItineraryGenerator.build_clarify_question(missing, params),
+                })
+                yield sse_frame({"event": "timing", "model": req.model or "default",
+                                 "phases": getattr(gen, "_phase_timings", {}) or {}})
+                yield SSE_DONE
+                return
+
+            # S3 草案：只生成，不落库、不审批（审批在 /trips/confirm 用户确认后触发）
             trip_dict = getattr(gen, "_last_trip", None)
             save_ms = 0
             policy_ms = 0
-            policy_events = []  # 默认空，供 timing 帧使用
+            policy_event = {}
             if trip_dict:
-                trip_dict["user_id"] = user_id
-                # 埋点：保存耗时
-                t_save = time.monotonic()
-                trip_id = deps.trip_store.save(trip_dict)
-                save_ms = int((time.monotonic() - t_save) * 1000)
-                yield sse_frame({"event": "done", "trip_id": trip_id, "trip": trip_dict})
-                # P1 链路：政策检查 + 审批自动发起（在 done 后、[DONE] 前）
+                # 埋点：政策预检耗时
                 t_policy = time.monotonic()
-                policy_events = _post_generate_policy_flow(trip_dict, trip_id, user_id)
+                policy_event = _policy_preview(trip_dict, user_id)
                 policy_ms = int((time.monotonic() - t_policy) * 1000)
-                for evt in policy_events:
-                    yield sse_frame(evt)
-                # PRD 3.5 审批门禁：需审批的行程置为待审批，主管通过后才生效
-                if any(e.get("event") == "approval" for e in policy_events):
-                    deps.trip_store.update(trip_id, {"status": "pending_approval"})
+                if policy_event:
+                    yield sse_frame(policy_event)
+                yield sse_frame({
+                    "event": "draft",
+                    "trip": trip_dict,
+                    "defaulted": getattr(gen, "last_defaulted", []) or [],
+                    "params": getattr(gen, "last_params", {}) or {},
+                })
             else:
-                yield sse_frame({"event": "done"})
+                yield sse_frame({"event": "error", "content": "行程草案生成失败，请稍后重试"})
 
             # 埋点：聚合各阶段耗时 + LLM 统计 → timing 帧，供外部基准脚本消费
             phase_timings = getattr(gen, "_phase_timings", {}) or {}
             phase_timings["save"] = {"duration_ms": save_ms}
             phase_timings["policy"] = {
                 "duration_ms": policy_ms,
-                "has_violations": any(e.get("event") == "policy" and e.get("has_violations")
-                                       for e in policy_events),
+                "has_violations": bool(policy_event.get("has_violations")),
             }
             phase_timings["api_total"] = {"duration_ms": int((time.monotonic() - api_started_at) * 1000)}
             yield sse_frame({"event": "timing", "model": req.model or "default",
@@ -199,10 +292,54 @@ async def generate_trip(req: GenerateTripRequest, request: Request):
             yield SSE_DONE
 
         except Exception as e:
-            logger.error(f"行程生成失败: {e}", exc_info=True)
+            logger.error(f"行程草案生成失败: {e}", exc_info=True)
             yield sse_frame({"event": "error", "content": str(e)})
 
     return sse_stream_response(generate())
+
+
+# ---------------------------------------------------------------------------
+# 方案确认 (S4 → S5) —— 用户确认草案后才落库 + 政策检查 + 审批
+# ---------------------------------------------------------------------------
+@router.post("/trips/confirm", tags=["行程生成"])
+async def confirm_trip(req: ConfirmTripRequest, request: Request):
+    """
+    确认行程草案：落库 + 政策检查 + 审批发起（PRD v2 S5）。
+
+    审批只允许在用户确认后发生；确认前政策违例仅作预警（见 /trips/generate 的 policy 帧）。
+    """
+    if deps.trip_store is None:
+        raise HTTPException(503, "服务未就绪")
+
+    trip_dict = req.trip or {}
+    if not isinstance(trip_dict, dict) or not (trip_dict.get("destination") or trip_dict.get("title")):
+        raise HTTPException(400, "无效的行程草案（缺少目的地/标题）")
+
+    user_id = req.session_id or getattr(request.state, "workspace_id", "default")
+    trip_dict["user_id"] = user_id
+    if trip_dict.get("status") == "pending_approval":
+        # 草案不应携带旧状态
+        trip_dict["status"] = "draft"
+
+    trip_id = deps.trip_store.save(trip_dict)
+
+    # S5 链路：政策检查 + 审批发起（仅此路径允许触发审批）
+    events = _confirm_policy_flow(trip_dict, trip_id, user_id)
+    if any(e.get("event") == "approval" for e in events):
+        # PRD 3.5 审批门禁：需审批的行程置为待审批，主管通过后才生效
+        deps.trip_store.update(trip_id, {"status": "pending_approval"})
+
+    saved = deps.trip_store.get(trip_id) or trip_dict
+    return {
+        "status": "ok",
+        "trip_id": trip_id,
+        "trip": saved,
+        "events": events,
+        "message": (
+            f"行程已确认保存（编号 {trip_id}）"
+            + ("；已发起审批" if any(e.get("event") == "approval" for e in events) else "")
+        ),
+    }
 
 
 # ---------------------------------------------------------------------------

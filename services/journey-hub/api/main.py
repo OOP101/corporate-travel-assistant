@@ -31,8 +31,9 @@ from shared.tracing import TraceContext
 from state import JourneyHubGraph
 from tools import ToolRegistry, ToolHandlers
 from memory.session import SessionManager
-from api.auth import auth_router, UserStore
-from api.admin import router as admin_router, DEFAULT_MODELS, CONFIG_ID, ConfigStore
+# 相对导入：api 包名在三个服务中重名，单进程统一网关下按别名加载，故不用绝对包名
+from .auth import auth_router, UserStore
+from .admin import router as admin_router, DEFAULT_MODELS, CONFIG_ID, ConfigStore
 
 logger = logging.getLogger("journey-hub")
 
@@ -59,6 +60,11 @@ class ChatResponse(BaseModel):
     intent: str = ""
     session_id: str = ""
     status: str = "ok"
+
+
+class PlanConfirmRequest(BaseModel):
+    session_id: str = Field(default="default")
+    trip: dict = Field(..., description="确认的行程草案（SSE confirm 事件帧的 trip 字段）")
 
 
 # ---------------------------------------------------------------------------
@@ -144,6 +150,7 @@ async def lifespan(app: FastAPI):
     tool_registry = ToolRegistry()
     tool_registry.register("plan_trip", tool_handlers.plan_trip, "行程规划")
     tool_registry.register("plan_trip_stream", tool_handlers.plan_trip_stream, "行程规划(流式)")
+    tool_registry.register("confirm_trip", tool_handlers.confirm_trip, "行程草案确认(落库+审批)")
     tool_registry.register("chat_query", tool_handlers.chat_query, "智能问答")
     tool_registry.register("manage_trip", tool_handlers.manage_trip, "行程管理")
     tool_registry.register("emergency_assist", tool_handlers.emergency_assist, "应急协助")
@@ -219,12 +226,15 @@ async def agent_chat_stream(req: ChatRequest, request: Request):
     SSE 流式 Agent 对话（真流式）
 
     发送事件帧：
-      event: route    → 正在分析意图
-      event: intent   → 意图分类结果
-      event: progress → 生成过程提示（plan 意图：分析/生成中进度，不进正文）
-      event: chunk    → 回复文本片段（chat 逐 token；plan 为格式化行程摘要逐段）
-      event: respond  → 完整回复（与 chunk 内容一致，兼容整体替换的前端契约）
-      event: error    → 错误
+      event: route       → 正在分析意图
+      event: intent      → 意图分类结果
+      event: progress    → 生成过程提示（plan 意图：分析/生成中进度，不进正文）
+      event: chunk       → 回复文本片段（chat 逐 token；plan 为草案摘要逐段）
+      event: clarify     → S2 澄清反问（missing 缺参清单 / params / round，前端渲染选项）
+      event: confirm     → S4 方案确认卡（trip 草案未落库 / defaulted 代填项）
+      event: trip_saved  → S5 确认完成（trip_id，已落库+审批）
+      event: respond     → 完整回复（与 chunk 内容一致，兼容整体替换的前端契约）
+      event: error       → 错误
     """
     if agent_hub is None:
         raise HTTPException(503, "服务未就绪")
@@ -268,6 +278,24 @@ async def list_sessions():
         return {"sessions": [], "count": 0}
     sessions = session_manager.list_sessions()
     return {"sessions": sessions, "count": len(sessions)}
+
+
+@app.post("/agent/plan/confirm", tags=["Agent 对话"])
+def agent_plan_confirm(req: PlanConfirmRequest, request: Request):
+    """S4 → S5：确认行程草案（前端确认卡按钮）。
+
+    调 planner POST /trips/confirm 落库 + 政策检查 + 审批发起；
+    审批只在用户确认后发生（PRD v2 铁律）。
+    """
+    if agent_hub is None:
+        raise HTTPException(503, "服务未就绪")
+    handler = tool_registry.get_handler("confirm_trip") if tool_registry else None
+    if handler is None:
+        raise HTTPException(503, "确认服务未就绪")
+    result = handler(session_id=req.session_id, trip=req.trip)
+    if not result.get("success"):
+        raise HTTPException(502, result.get("message", "行程确认失败"))
+    return result
 
 
 @app.get("/agent/session/{session_id}/history", tags=["Agent 对话"])

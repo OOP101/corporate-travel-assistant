@@ -1,9 +1,9 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { MapPin, Calendar, Trash2, Plus, Plane, Loader2, ArrowRight } from 'lucide-react';
-import { listTrips, deleteTrip, generateTripStream } from '../api/planner';
+import { listTrips, deleteTrip, generateTripStream, confirmTrip } from '../api/planner';
 import { generationStore } from '../store/generationStore';
-import { PageHeader, ModalForm, Button, Badge, EmptyState } from '../components';
+import { PageHeader, ModalForm, Button, Badge, EmptyState, TripConfirmCard } from '../components';
 
 const GRADIENTS = [
   'from-primary-500 to-purple-500',
@@ -12,27 +12,6 @@ const GRADIENTS = [
   'from-emerald-500 to-teal-400',
   'from-pink-500 to-rose-400',
 ];
-
-// 把生成完成的行程数据格式化为可读摘要（避免把原始 JSON 刷上屏）
-function formatTripBrief(trip) {
-  const lines = [];
-  if (trip.title) lines.push(`🧳 标题：${trip.title}`);
-  if (trip.destination) lines.push(`📍 目的地：${trip.destination}`);
-  const dates = [trip.start_date, trip.end_date].filter(Boolean).join(' → ');
-  if (dates) lines.push(`📅 日期：${dates}`);
-  if (trip.budget_total) lines.push(`💰 预算：¥${Number(trip.budget_total).toLocaleString()}`);
-  (trip.days || []).forEach((d, i) => {
-    const date = d.date || '';
-    const theme = d.theme || '';
-    const label = [date, theme].filter(Boolean).join(' · ');
-    lines.push(`  Day ${i + 1}${label ? ` ${label}` : ''}（${(d.activities || []).length} 项活动）`);
-  });
-  if (Array.isArray(trip.checklist) && trip.checklist.length) {
-    lines.push(`✅ 出行清单：${trip.checklist.length} 项`);
-  }
-  if (!lines.length) lines.push('行程已生成');
-  return lines.join('\n');
-}
 
 export default function TripsPage() {
   const [trips, setTrips] = useState([]);
@@ -79,7 +58,11 @@ export default function TripsPage() {
     generationStore.set({ status: 'analyzing', query });
 
     let rawLen = 0;
-    const approvalNote = [];
+    // v2：场景由用户选择（必填）；交通方式可选（默认飞机），均作为显式参数传给生成器
+    const explicitParams = {
+      ...(values.scene ? { scene: values.scene } : {}),
+      ...(values.transport ? { transport: values.transport } : {}),
+    };
 
     generateTripStream(query, {}, (evt) => {
       if (evt.event === 'status') {
@@ -91,33 +74,65 @@ export default function TripsPage() {
           status: 'generating',
           statusText: `行程内容生成中…已接收 ${rawLen} 字`,
         });
-      } else if (evt.event === 'policy') {
-        if (evt.has_violations) approvalNote.push(`⚠️ 政策检查：${evt.content || '存在需关注项'}`);
-        else approvalNote.push(`✅ 政策检查：${evt.content || '通过'}`);
-      } else if (evt.event === 'approval') {
-        approvalNote.push(`🖊️ ${evt.content || '已发起审批'}`);
-      } else if (evt.event === 'done') {
-        // 完成：展示格式化摘要（而不是堆满原始 JSON）
-        const brief = evt.trip ? formatTripBrief(evt.trip) : '行程已生成 ✓';
-        const tail = approvalNote.length ? '\n' + approvalNote.join('\n') : '';
+      } else if (evt.event === 'clarify') {
+        // v2 S2 澄清：缺参不生成，引导到对话或补全表单
         generationStore.set({
-          status: 'done',
-          text: brief + tail,
-          tripId: evt.trip_id || null,
-          trip: evt.trip || null,
+          status: 'clarify',
+          text: evt.content || '请补充出行场景、日期天数等信息',
+          missing: evt.missing || [],
         });
-        // 挂载中直接跳详情；切走则在返回时由 loadTrips 在列表展示
-        if (mountedRef.current) {
-          if (evt.trip_id) navigate(`/trips/${evt.trip_id}`);
-          else loadTrips();
-        } else {
-          loadTrips();
+      } else if (evt.event === 'policy') {
+        // 政策预检（草案阶段仅预警，不触发审批），结果随确认卡展示
+        generationStore.set({
+          policy: {
+            has_violations: !!evt.has_violations,
+            content: evt.content || '',
+          },
+        });
+      } else if (evt.event === 'draft') {
+        // v2 S4 草案：未落库，渲染确认卡
+        generationStore.set({
+          status: 'draft',
+          text: '',
+          trip: evt.trip || null,
+          defaulted: evt.defaulted || [],
+          statusText: '方案草案已生成，请确认',
+        });
+      } else if (evt.event === 'done') {
+        // 兼容：草案流程结束（draft 已渲染确认卡）或异常无草案
+        if (!generationStore.get().trip) {
+          generationStore.set({ status: 'done', text: '未生成有效草案' });
         }
       } else if (evt.event === 'error') {
         generationStore.set({ status: 'error', error: evt.content });
       }
-    });
+    }, explicitParams);
     // 注意：不在此 abort —— 允许切菜单后后台继续生成，返回时续显
+  };
+
+  const handleConfirmDraft = async () => {
+    const { trip } = generationStore.get();
+    if (!trip) return;
+    generationStore.set({ status: 'confirming', statusText: '正在提交确认…' });
+    try {
+      const res = await confirmTrip(trip, 'web-user');
+      const notes = (res.events || [])
+        .map((e) => (e.event === 'policy' ? `${e.has_violations ? '⚠️' : '✅'} 政策检查：${e.content}` : e.event === 'approval' ? `🖊️ ${e.content}` : null))
+        .filter(Boolean);
+      generationStore.set({
+        status: 'done',
+        text: `${res.message || '行程已确认保存'}${notes.length ? '\n' + notes.join('\n') : ''}`,
+        tripId: res.trip_id || null,
+      });
+      if (mountedRef.current) {
+        if (res.trip_id) navigate(`/trips/${res.trip_id}`);
+        else loadTrips();
+      } else {
+        loadTrips();
+      }
+    } catch (e) {
+      generationStore.set({ status: 'draft', statusText: '确认失败，请重试', error: e?.message });
+    }
   };
 
   return (
@@ -135,23 +150,49 @@ export default function TripsPage() {
       {gen.status && gen.status !== 'idle' && (
         <div className="mb-4 px-4 py-3 rounded-xl bg-primary-50 border border-primary-100 text-primary-800 text-sm">
           <div className="flex items-center gap-2 mb-1.5 font-medium">
-            <Loader2 size={16} className={gen.status === 'done' ? '' : 'animate-spin'} />
+            <Loader2 size={16} className={['done', 'clarify', 'draft'].includes(gen.status) ? '' : 'animate-spin'} />
             {gen.status === 'analyzing'
               ? (gen.statusText || '正在分析您的出行需求...')
               : gen.status === 'generating'
                 ? (gen.statusText || '正在生成行程（航班、酒店、会议衔接）...')
-                : gen.status === 'done'
-                  ? '行程已生成 ✓'
-                  : '生成失败'}
+                : gen.status === 'clarify'
+                  ? '信息不足，需要补充'
+                  : gen.status === 'draft'
+                    ? (gen.statusText || '方案草案已生成，请确认')
+                    : gen.status === 'confirming'
+                      ? (gen.statusText || '正在提交确认...')
+                      : gen.status === 'done'
+                        ? '行程已确认 ✓'
+                        : '生成失败'}
           </div>
-          {gen.text ? (
-            <pre className="whitespace-pre-wrap break-words text-[13px] leading-relaxed text-primary-900 bg-white/60 rounded-lg p-3 mt-1 max-h-80 overflow-auto">
-              {gen.text}
-            </pre>
+          {gen.status === 'draft' && gen.trip ? (
+            <TripConfirmCard
+              trip={gen.trip}
+              defaulted={gen.defaulted || []}
+              policy={gen.policy || null}
+              busy={false}
+              onConfirm={() => handleConfirmDraft()}
+              onEdit={() => setShowGenerate(true)}
+              onCancel={() => generationStore.reset()}
+            />
           ) : (
-            gen.status !== 'done' && (
-              <div className="mt-1 text-[13px] text-primary-700/80">后台持续生成中，切换菜单不中断，完成后自动更新…</div>
-            )
+            <>
+              {gen.text ? (
+                <pre className="whitespace-pre-wrap break-words text-[13px] leading-relaxed text-primary-900 bg-white/60 rounded-lg p-3 mt-1 max-h-80 overflow-auto">
+                  {gen.text}
+                </pre>
+              ) : (
+                gen.status !== 'done' && gen.status !== 'clarify' && (
+                  <div className="mt-1 text-[13px] text-primary-700/80">后台持续生成中，切换菜单不中断，完成后自动更新…</div>
+                )
+              )}
+              {gen.status === 'clarify' && (
+                <div className="mt-1 text-[13px] text-primary-700/80">
+                  缺少：{(gen.missing || []).map((m) => ({ scene: '出行场景', destination: '目的地', start_date: '出发日期', days: '天数' }[m] || m)).join('、')}
+                  。请补充场景与日期后重试，或到「智能助手」对话中说明。
+                </div>
+              )}
+            </>
           )}
           {gen.status === 'error' && (
             <div className="text-red-600 mt-1">{gen.error || '生成失败'}</div>
@@ -233,14 +274,39 @@ export default function TripsPage() {
           submitText="开始规划"
           fields={[
             {
+              name: 'scene',
+              label: '出行场景（必选）',
+              type: 'select',
+              options: [
+                { value: '', label: '请选择出行场景' },
+                { value: 'business', label: '商务出差' },
+                { value: 'meeting', label: '会议/参展' },
+                { value: 'visit', label: '客户拜访' },
+                { value: 'team', label: '团队出行' },
+                { value: 'personal', label: '个人出游' },
+              ],
+              rule: { required: true, message: '请选择出行场景' },
+            },
+            {
+              name: 'transport',
+              label: '交通方式',
+              type: 'select',
+              options: [
+                { value: 'airplane', label: '飞机（默认）' },
+                { value: 'train', label: '高铁/火车' },
+                { value: 'drive', label: '自驾' },
+              ],
+            },
+            {
               name: 'query',
               label: '行程需求',
               type: 'textarea',
-              placeholder: '例：9月15号广州飞北京出差，16号拜访国贸客户，17号下午返程',
+              placeholder: '例：9月15号广州飞北京，16号上午拜访国贸客户，17号下午返程',
               rule: { required: true, message: '请描述行程需求' },
             },
           ]}
           onSubmit={handleGenerate}
+          initialValues={{ transport: 'airplane' }}
         />
       )}
     </div>

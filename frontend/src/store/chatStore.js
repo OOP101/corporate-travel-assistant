@@ -9,11 +9,24 @@
  *  - localStorage 快照持久化，刷新页面也能恢复最近对话；
  *  - 首次进入且无本地快照时，回放 journey-hub 服务端会话历史兜底。
  */
-import { chatStream, clearSession, getSessionHistory } from '../api/journey';
+import { chatStream, clearSession, getSessionHistory, confirmTripPlan } from '../api/journey';
 
 const SESSION_ID = 'web-user';
 const LS_KEY = 'cjh_chat_web-user';
 const MAX_STORED = 60; // localStorage 只保留最近 N 条，防止膨胀
+
+// 干净启动（launcher.py fresh / 自动清空）会以 ?fresh=1 打开工作台：
+// 这里顺手丢掉上一次的对话快照，避免"清了后端、前端还显示旧对话"。
+// 只清对话缓存，不动登录态（cjh_auth）；参数用完即从地址栏摘掉，避免误伤后续刷新。
+try {
+  const params = new URLSearchParams(window.location.search);
+  if (params.get('fresh') === '1') {
+    localStorage.removeItem(LS_KEY);
+    params.delete('fresh');
+    const qs = params.toString();
+    window.history.replaceState({}, '', window.location.pathname + (qs ? `?${qs}` : '') + window.location.hash);
+  }
+} catch { /* 隐私模式等场景忽略 */ }
 
 export const GREETING = {
   role: 'assistant',
@@ -140,6 +153,29 @@ function onStreamEvent(evt) {
   } else if (evt.event === 'progress') {
     // 生成过程提示：不进正文，仅作阶段展示
     patchLast((m) => ({ ...m, progress: evt.content }));
+  } else if (evt.event === 'clarify') {
+    // v2 S2 澄清反问：附缺参清单，前端据此渲染可点选项
+    patchLast((m) => ({
+      ...m,
+      content: evt.content || m.content,
+      clarify: { missing: evt.missing || [], params: evt.params || {}, round: evt.round || 1 },
+      progress: '',
+    }));
+  } else if (evt.event === 'confirm') {
+    // v2 S4 方案草案：未落库未审批，前端渲染确认卡
+    patchLast((m) => ({
+      ...m,
+      draft: { trip: evt.trip, defaulted: evt.defaulted || [] },
+      progress: '',
+    }));
+  } else if (evt.event === 'trip_saved') {
+    // v2 S5 确认完成：已落库 + 审批，展示行程卡片
+    patchLast((m) => ({
+      ...m,
+      draft: null,
+      cards: evt.trip_id ? [{ type: 'trip', id: evt.trip_id }] : m.cards,
+      savedTripId: evt.trip_id || null,
+    }));
   } else if (evt.event === 'chunk') {
     patchLast((m) => ({ ...m, content: (m.content || '') + evt.content, progress: '' }));
   } else if (evt.event === 'respond') {
@@ -151,10 +187,12 @@ function onStreamEvent(evt) {
   } else if (evt.event === 'done') {
     const last = Array.isArray(state.messages) ? state.messages[state.messages.length - 1] : null;
     const intent = (last && last.intent) || 'chat';
-    patchLast((m) => ({ ...m, followups: FOLLOWUPS[intent] || FOLLOWUPS.chat }));
-    // 同步刷新输入框上方常驻建议（固定 3 条，可手动「换一批」随机）
-    state.quick = FOLLOWUPS[intent] || FOLLOWUPS.chat;
-    state.quickIntent = intent;
+    // 草案待确认 / 澄清中：追问由确认卡与澄清选项承担，不再追加常驻追问
+    if (!last?.draft && !last?.clarify) {
+      patchLast((m) => ({ ...m, followups: FOLLOWUPS[intent] || FOLLOWUPS.chat }));
+      state.quick = FOLLOWUPS[intent] || FOLLOWUPS.chat;
+      state.quickIntent = intent;
+    }
     finishLoading();
   }
 }
@@ -221,7 +259,8 @@ export const chatStore = {
     state.messages = [
       ...state.messages,
       { role: 'user', content: text },
-      { role: 'assistant', content: '', intent: '', cards: [], followups: [], progress: '' },
+      // query 留底：确认卡「改参数重新生成」时回填输入框
+      { role: 'assistant', content: '', intent: '', cards: [], followups: [], progress: '', query: text },
     ];
     state.loading = true;
     persist();
@@ -247,6 +286,62 @@ export const chatStore = {
     state.quick = sampleQuick(intent, 3);
     emit();
     return state.quick;
+  },
+
+  // ------------------------------------------------------------------
+  // v2 方案确认（S4 → S5）
+  // ------------------------------------------------------------------
+
+  /** 确认草案：调 journey /agent/plan/confirm → planner 落库 + 政策 + 审批 */
+  async confirmDraft(trip) {
+    if (state.loading) return false;
+    if (!state.messages) return false;
+    state.messages = [
+      ...state.messages,
+      { role: 'user', content: '确认并提交审批' },
+      { role: 'assistant', content: '', intent: 'plan', cards: [], followups: [], progress: '正在提交审批…' },
+    ];
+    state.loading = true;
+    persist();
+    emit();
+    try {
+      const res = await confirmTripPlan(SESSION_ID, trip);
+      patchLast((m) => ({
+        ...m,
+        content: res.message || '行程已确认保存',
+        cards: res.trip_id ? [{ type: 'trip', id: res.trip_id }] : [],
+        draft: null,
+        savedTripId: res.trip_id || null,
+        followups: FOLLOWUPS.plan,
+        progress: '',
+      }));
+      state.quick = FOLLOWUPS.plan;
+      state.quickIntent = 'plan';
+    } catch (e) {
+      patchLast({ content: `确认失败：${e?.message || '请稍后重试'}`, progress: '' });
+    }
+    finishLoading();
+    return true;
+  },
+
+  /** 取消草案：仅清除前端草案态（草案本就未落库，无服务端残留） */
+  cancelDraft() {
+    patchLast((m) => ({
+      ...m,
+      draft: null,
+      content: (m.content || '') + '\n\n（已取消：方案未提交、未落库）',
+      followups: FOLLOWUPS.plan,
+    }));
+    return true;
+  },
+
+  /** 「改参数重新生成」：回填该轮原始需求到输入框（历史参数保留在文案里） */
+  editDraft() {
+    const msgs = Array.isArray(state.messages) ? state.messages : [];
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      if (msgs[i]?.draft && msgs[i].query) return msgs[i].query;
+    }
+    return '';
   },
 
   /** 清空当前会话（本地快照 + 服务端内存历史一并清，避免刷新后旧历史回放） */
