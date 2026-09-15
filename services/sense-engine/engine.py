@@ -7,8 +7,15 @@
   3. 变更检测：与上次状态缓存对比，仅对"变更"或"异常"的结果推送提醒
   4. 过滤规则：静默不值得提醒的轻微变化（如航班延误 < 15 分钟）
   5. 通过 APScheduler 实现每 5 分钟一次的定时全量检查，支持优雅启停
+
+持久化：订阅表与状态缓存落盘到 `data/sense/`，服务重启后订阅不丢——
+此前为纯内存字典，重启即清空，导致 check_all 空转、实时监控形同虚设。
 """
+import json
 import logging
+import os
+import tempfile
+import threading
 from typing import Dict, List, Optional
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -25,8 +32,11 @@ logger = logging.getLogger("sense-engine.engine")
 class SenseEngine:
     """实时感知引擎"""
 
-    def __init__(self, alert_manager: AlertManager):
+    def __init__(self, alert_manager: AlertManager, data_dir: Optional[str] = None):
         self.alert_manager = alert_manager
+        self._data_dir = data_dir
+        # 订阅/状态缓存的读写锁（调度线程与请求线程并发访问）
+        self._lock = threading.RLock()
 
         # 注册数据源
         self._sources: Dict[str, BaseSource] = {
@@ -47,6 +57,70 @@ class SenseEngine:
         # 定时调度器
         self._scheduler: Optional[BackgroundScheduler] = None
 
+        # 回灌上次运行留下的订阅与状态缓存（服务重启不丢监控目标）
+        if self._data_dir:
+            os.makedirs(self._data_dir, exist_ok=True)
+            self._load_state()
+
+    # ------------------------------------------------------------------
+    # 持久化（订阅表 + 状态缓存）
+    # ------------------------------------------------------------------
+    @property
+    def _subscriptions_path(self) -> Optional[str]:
+        return os.path.join(self._data_dir, "subscriptions.json") if self._data_dir else None
+
+    @property
+    def _state_cache_path(self) -> Optional[str]:
+        return os.path.join(self._data_dir, "state_cache.json") if self._data_dir else None
+
+    def _load_state(self) -> None:
+        """启动时回灌订阅与状态缓存；数据缺失/损坏不阻断启动。"""
+        for path, target, label in (
+            (self._subscriptions_path, self._subscriptions, "订阅"),
+            (self._state_cache_path, self._state_cache, "状态缓存"),
+        ):
+            if not path or not os.path.exists(path):
+                continue
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, dict):
+                    target.update(data)
+                    logger.info(f"已恢复 {len(data)} 条{label}")
+            except Exception as e:
+                logger.error(f"加载{label}失败，从空状态开始: {e}")
+
+    @staticmethod
+    def _atomic_write(path: str, data: dict, data_dir: str) -> None:
+        """原子写：先写临时文件再替换，避免写一半被读到。"""
+        fd, tmp = tempfile.mkstemp(dir=data_dir, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            os.replace(tmp, path)
+        except Exception:
+            if os.path.exists(tmp):
+                os.unlink(tmp)
+            raise
+
+    def _persist_subscriptions(self) -> None:
+        path = self._subscriptions_path
+        if not path:
+            return
+        try:
+            self._atomic_write(path, self._subscriptions, self._data_dir)
+        except Exception as e:
+            logger.error(f"订阅落盘失败: {e}")
+
+    def _persist_state_cache(self) -> None:
+        path = self._state_cache_path
+        if not path:
+            return
+        try:
+            self._atomic_write(path, self._state_cache, self._data_dir)
+        except Exception as e:
+            logger.error(f"状态缓存落盘失败: {e}")
+
     # ------------------------------------------------------------------
     # 订阅管理
     # ------------------------------------------------------------------
@@ -60,7 +134,9 @@ class SenseEngine:
                 user_id, flight_number, destination, origin,
                 check_weather, check_traffic, check_attractions, attractions
         """
-        self._subscriptions[trip_id] = subscription
+        with self._lock:
+            self._subscriptions[trip_id] = subscription
+            self._persist_subscriptions()
         logger.info(
             f"已订阅行程 {trip_id}: "
             f"flight={subscription.get('flight_number', '')}, "
@@ -73,24 +149,29 @@ class SenseEngine:
 
     def unsubscribe(self, trip_id: str) -> bool:
         """取消行程的订阅"""
-        if trip_id in self._subscriptions:
+        with self._lock:
+            if trip_id not in self._subscriptions:
+                return False
             del self._subscriptions[trip_id]
             # 清理该行程的状态缓存
             prefix = f"{trip_id}:"
             keys_to_remove = [k for k in self._state_cache if k.startswith(prefix)]
             for k in keys_to_remove:
                 del self._state_cache[k]
-            logger.info(f"已取消订阅行程 {trip_id}")
-            return True
-        return False
+            self._persist_subscriptions()
+            self._persist_state_cache()
+        logger.info(f"已取消订阅行程 {trip_id}")
+        return True
 
     def get_subscriptions(self) -> dict:
         """返回所有订阅信息"""
-        return dict(self._subscriptions)
+        with self._lock:
+            return dict(self._subscriptions)
 
     def get_subscription(self, trip_id: str) -> Optional[dict]:
         """获取单个行程的订阅信息"""
-        return self._subscriptions.get(trip_id)
+        with self._lock:
+            return self._subscriptions.get(trip_id)
 
     # ------------------------------------------------------------------
     # 检查逻辑
@@ -98,7 +179,8 @@ class SenseEngine:
     def check_all(self) -> List[AlertEvent]:
         """遍历所有订阅执行检查，返回本次新产生的提醒列表"""
         all_alerts: List[AlertEvent] = []
-        trip_ids = list(self._subscriptions.keys())
+        with self._lock:
+            trip_ids = list(self._subscriptions.keys())
 
         if not trip_ids:
             logger.debug("当前无订阅，跳过检查")
@@ -123,7 +205,8 @@ class SenseEngine:
         根据订阅信息决定调用哪些数据源，
         对每个结果进行变更检测和过滤，仅推送新提醒。
         """
-        subscription = self._subscriptions.get(trip_id)
+        with self._lock:
+            subscription = self._subscriptions.get(trip_id)
         if not subscription:
             logger.warning(f"行程 {trip_id} 无订阅信息")
             return []
@@ -214,15 +297,18 @@ class SenseEngine:
         Returns:
             True 表示状态发生变化（或首次出现），应推送提醒
         """
-        last = self._state_cache.get(key)
-        if last is None:
-            # 首次出现，视为变更
-            self._state_cache[key] = value
-            return True
-        if last != value:
-            self._state_cache[key] = value
-            return True
-        return False
+        with self._lock:
+            last = self._state_cache.get(key)
+            if last is None:
+                # 首次出现，视为变更
+                self._state_cache[key] = value
+                self._persist_state_cache()
+                return True
+            if last != value:
+                self._state_cache[key] = value
+                self._persist_state_cache()
+                return True
+            return False
 
     def _should_alert(self, source_result: SourceResult) -> bool:
         """
@@ -286,4 +372,5 @@ class SenseEngine:
     @property
     def subscription_count(self) -> int:
         """当前订阅数量"""
-        return len(self._subscriptions)
+        with self._lock:
+            return len(self._subscriptions)

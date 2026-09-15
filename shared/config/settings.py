@@ -78,6 +78,8 @@ class Settings:
     trip_data_dir: str = field(default_factory=lambda: _anchor_data_path(os.getenv("TRIP_DATA_DIR", "./data/trips")))
     profile_data_dir: str = field(default_factory=lambda: _anchor_data_path(os.getenv("PROFILE_DATA_DIR", "./data/profiles")))
     template_data_dir: str = field(default_factory=lambda: _anchor_data_path(os.getenv("TEMPLATE_DATA_DIR", "./data/templates")))
+    # 感知监控（订阅表 + 提醒），落盘以保证服务重启后订阅与提醒不丢
+    sense_data_dir: str = field(default_factory=lambda: _anchor_data_path(os.getenv("SENSE_DATA_DIR", "./data/sense")))
 
     # --- 外部数据源 ---
     # 地图：腾讯位置服务（需 key + SecretKey 做 SN 签名；高德已切换至腾讯）

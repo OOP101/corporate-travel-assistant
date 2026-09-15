@@ -64,6 +64,7 @@ RUNTIME_CONTENTS = [
     "data/org/approvals",      # 审批单
     "data/org/reimbursements", # 报销单
     "data/profiles",           # 用户画像缓存
+    "data/sense",              # 感知监控（订阅表 + 提醒）
 ]
 # scope=full 时额外清理
 FULL_CONTENTS_EXTRA = [
@@ -115,6 +116,7 @@ CATEGORIES = [
     ("data/org/policy_docs/", "政策文档（种子）"),
     ("data/org/guide_docs/", "景点/攻略语料（种子）"),
     ("data/profiles/", "用户画像"),
+    ("data/sense/", "感知监控（订阅 + 提醒）"),
     ("data/templates/", "行程模板"),
     (".logs", "运行日志"),
     (".run", "PID/运行状态"),

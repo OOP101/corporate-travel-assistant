@@ -14,6 +14,7 @@ API:
   POST /query                → 按需直查实时数据（天气/航班/铁路），不等监控订阅
 """
 import logging
+import os
 from typing import Optional
 from contextlib import asynccontextmanager
 
@@ -103,9 +104,12 @@ async def lifespan(app: FastAPI):
     # 注册开发用 API Key
     api_key_auth.register_workspace("default", settings.dev_api_key)
 
-    # 初始化提醒管理器与感知引擎
-    alert_manager = AlertManager()
-    engine = SenseEngine(alert_manager=alert_manager)
+    # 初始化提醒管理器与感知引擎（均落盘到 data/sense，重启不丢订阅与提醒）
+    alert_manager = AlertManager(data_dir=os.path.join(settings.sense_data_dir, "alerts"))
+    engine = SenseEngine(
+        alert_manager=alert_manager,
+        data_dir=os.path.join(settings.sense_data_dir, "monitor"),
+    )
     engine.start()
 
     logger.info("感知·Sense Engine 已启动 (port 8003)")
