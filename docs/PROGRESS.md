@@ -186,6 +186,11 @@
 
 8. **文档冗余清单**：新建 `docs_企业智行/10-文档冗余清单（待决策）.md`（**只列不动，待拍板**）。核心结论：`docs/` 全保留；`05`（TravelAI 补齐清单）/`09`（C 端简历模板）前提已被否决、建议归档；`06` 两处结论已被 07 推翻；`README.md` 修正记录需更新；pptx 基于 8/30 旧版已过期。另发现**简历口径双源**（`02-简历表述.md` vs `docs/简历项目经历-企业智行.md`）与 `03` 持续落后 PROGRESS 两个风险。
 
+9. **修复实时监控失效（2026-09-15）**：用户报「启动了也不能实时监控」。排查确认进程非崩溃而是被沙箱回收（`gateway.log` 无 traceback），真正的缺陷是**订阅与提醒均为纯内存态**——`SenseEngine._subscriptions` 与 `AlertManager._alerts` 服务一重启即清空，`check_all()` 走 `if not trip_ids: return` 空转，"执行成功"的日志实为假象。
+   - 修复：新增 `sense_data_dir`（`data/sense`）；订阅表 + 状态缓存落盘 `data/sense/monitor/`、提醒落盘 `data/sense/alerts/alerts.json`（含 `delivered`）；均原子写（`tempfile`+`os.replace`），启动回灌，损坏数据只记日志不阻断；`SenseEngine` 加 `RLock` 保护调度线程与请求线程并发；单行程提醒上限 200 条防膨胀；`reset_data.py` 纳入 `data/sense`。
+   - 验证：新增 `tests/test_sense_persistence.py` 20 例；HTTP 层实测「订阅 → 检查 → 提醒 → 重启 → 订阅与提醒均保留」。**全量 170 passed（150 → 170）**。
+   - ⚠️ 排查陷阱：mock 数据源每次返回**随机结果**，会让 `check_all` 持续产出新提醒——这是 mock 特性而非去重失效（稳定数据下实测 1,0,0 正确）。
+
 ## 本次会话交付（续）：外部服务接入（腾讯地图 / 和风天气 / 酒店 POI）
 - 触发：用户指出出发地未接地图 API key/未调用、天气工具未在规划链路调用、酒店/美团/携程未集成。核实结论：**全部属实**——`planner-core/**` 对 weather/traffic/geocode/sense 零引用，`shared/state/graph.py` 零引用；地图/和风仅存在于 sense-engine 的监控+问答直查路径且 key 为空（=mock）；酒店零 API 集成。根因：实时数据被设计成 sense-engine 的感知/监控+问答，与 planner 纯生成模块未打通，外部 key 以空串占位+mock 源。
 - 用户拍板（AskUserQuestion）：三项全做；用户提供真实 key；酒店走地图 POI 结构化候选（携程/美团开放 API 为白名单，不纳入）。
