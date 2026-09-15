@@ -77,16 +77,39 @@
 - Node.js 18+（前端）
 - Docker（可选，用于容器化部署）
 
-### 4.2 后端启动（无需 Docker）
-
 ### 4.2 一键启动（推荐）
 
-双击 `start.bat`（或 `CorporateJourneyHub.exe`），或命令行：
+**绝大多数时候你只需要双击 `start.bat`。**
+
+根目录的启动脚本都是 `launcher.py` 的薄壳（只负责转发参数），逻辑全在 `launcher.py` 里，业务代码零复制。
+
+| 双击这个 | 什么时候用 | 会清数据吗 | 窗口 |
+|:---|:---|:---:|:---|
+| **`start.bat`** | 日常启动（**默认选它**） | 否 | 启动完自动关闭 |
+| **`总控台.bat`** | 想边跑服务边操作（看状态/重启/翻日志） | 否 | 常驻，不关 |
+| `停止.bat` | 关闭全部服务 | 否 | 关 |
+| `干净启动.bat` | 演示前重置（清掉上次行程/对话） | 是（保留配置） | 关 |
+| `清空数据.bat` | 只想清数据、不启动 | 是（保留配置） | 关 |
+| `一键更新.bat` | 出可分发版本（重新打包 EXE） | 否 | 停留等确认 |
+
+**`总控台.bat` 是什么？** 它是一个**常驻菜单**，不是另一个服务。和 `start.bat` 的唯一区别是启动后**不关窗口**，留在控制台里给你操作：
+
+```
+[1] 启动全部   [2] 停止全部   [3] 重启全部
+[4] 查看日志   [5] 打开日志目录   [6] 打开工作台
+[7] 刷新状态   [0] 退出（服务继续跑）
+
+[11] 每次启动自动清   ← 开关，用于演示前重置
+```
+
+面板上会实时显示 4 个服务的彩色状态（运行中/未启动 + PID + 日志文件）。**需要反复调试、看日志、重启服务时用它；日常只想跑起来用 `start.bat`。**
+
+命令行等价写法：
 
 ```bash
 python launcher.py                 # 一键启动（默认单体模式：单进程单端口 8001）→ 自动开工作台，窗口自动关闭
 python launcher.py micro           # 以微服务模式启动（8001/8002/8003 三进程）
-python launcher.py menu            # 常驻总控台（状态面板 + 启动/停止/重启/日志/清空数据一体化）
+python launcher.py menu            # 常驻总控台（= 总控台.bat）
 python launcher.py stop            # 停止全部服务（含前端；覆盖两种模式端口，先优雅后强杀）
 python launcher.py restart         # 重启（当前模式）
 python launcher.py status          # 查看服务状态（并行探活，秒级返回）
@@ -95,10 +118,11 @@ python launcher.py clean           # 清空运行数据（行程/审批/报销/�
 python launcher.py fresh           # 干净启动：停止 → 清空运行数据 → 重新启动
 ```
 
-也可直接双击：**`总控台.bat`**（常驻总控台，含启动/停止/重启/日志/状态）、`停止.bat`（一键停全部）、`start.bat`（启动后自动收窗）、`干净启动.bat`（清空历史后启动）、`清空数据.bat`（只清不启）。
 默认 `start` 完成后启动窗口自动关闭，**重复双击不会叠出多个黑窗**（服务本体无窗口，日志落盘 `.logs/`）；
 后端 + 前端均后台运行，依赖增量检测（requirements.txt 变化才重装）；
 启动为并行拉起 + 增量健康检查（谁先就绪先报谁），单体模式冷启动约 6 秒就绪。
+
+> 为什么这些 `.bat` 全是英文？cmd 按 GBK 解析，中文放进 bat 容易乱码，所以中文提示一律只在 `launcher.py` 里输出。
 
 **清空历史数据（解决"上次的行程/对话还在"）**
 
@@ -110,7 +134,7 @@ python launcher.py fresh           # 干净启动：停止 → 清空运行数�
 | 干净启动 | `干净启动.bat` / `python launcher.py fresh` | 停止 → 清空 → 启动，工作台带 `?fresh=1` 顺带清前端对话快照 |
 | 每次都清 | 总控台按 `[11]` 开启 | 之后每次 `start.bat` 启动都会先清一遍（标记文件 `.cjh_fresh`，再去按一次即关闭） |
 
-清理范围：`data/trips`、`data/test_trips`、`data/org/approvals`、`data/org/reimbursements`、`data/profiles`、`.logs`、`.run`，以及 `__pycache__` / `.pytest_cache` / `frontend/node_modules/.vite` / `frontend/dist` 等缓存。
+清理范围：`data/trips`、`data/test_trips`、`data/org/approvals`、`data/org/reimbursements`、`data/profiles`、`data/sense`（监控订阅与提醒）、`.logs`、`.run`，以及 `__pycache__` / `.pytest_cache` / `frontend/node_modules/.vite` / `frontend/dist` 等缓存。
 **不会动**：`data/system/`（大模型与管理员配置）、`data/org/{departments,employees,policies,policy_docs}`（组织与政策种子）、`.env`、源码。
 
 删除前会整体搬到 `.backup/reset-<时间戳>/`（保留最近 3 份，可随时回滚）。需要连种子数据一起清：
