@@ -19,3 +19,7 @@ fail_test.txt
 .DS_Store
 Thumbs.db
 .workbuddy/
+
+# 求职与竞品调研材料：本地保留，不入公开仓库
+docs_企业级旅行服务助手/
+docs/简历项目经历-企业智行.md
