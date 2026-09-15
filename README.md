@@ -14,29 +14,33 @@
 
 ## 一、项目概述
 
-企业智行是一个面向**企业内部行程规划与安排**的多 Agent 协作平台，由三个松耦合微服务组成，自上而下覆盖「Agent 编排 → 行程规划 → 实时感知」三层架构，帮助企业将分散在邮件、IM、Excel 中的行程安排统一为一个智能入口。
+企业智行是一个面向**企业内部行程规划与安排**的多 Agent 协作平台，业务上分为「Agent 编排 → 行程规划 → 实时感知」三层，由三个松耦合服务承载，帮助企业将分散在邮件、IM、Excel 中的行程安排统一为一个智能入口。
 
-| 服务 | 代号 | 定位 | 端口 |
-|:---|:---|:---|:---|
-| **行智 · Journey Hub** | `journey-hub` | Agent 编排中心 | 8001 |
-| **策程 · Planner Core** | `planner-core` | 行程规划引擎 | 8002 |
-| **感知 · Sense Engine** | `sense-engine` | 实时感知引擎 | 8003 |
+| 服务 | 代号 | 定位 | 单体模式 | 微服务模式 |
+|:---|:---|:---|:---|:---|
+| **行智 · Journey Hub** | `journey-hub` | Agent 编排中心 | `/`（8001） | 8001 |
+| **策程 · Planner Core** | `planner-core` | 行程规划引擎 | `/planner`（8001） | 8002 |
+| **感知 · Sense Engine** | `sense-engine` | 实时感知引擎 | `/sense`（8001） | 8003 |
 
 三个服务通过 REST API 和 SSE 协同工作，共享平台复用层（`shared/`），零重复代码。
+
+**两种运行模式，一套代码**（`launcher.py start [single|micro]`，默认 single）：
+
+- **单体模式（默认，日常推荐）**：`services/gateway` 把三个服务的 FastAPI app 装配进**同一个进程、同一个端口 8001**——一个进程、一个总控台、一份日志，启动更快、排查更简单；服务之间仍走 HTTP（`/planner`、`/sense` 前缀），编排逻辑零改动。
+- **微服务模式（架构演示 / 单服务调试）**：三个服务各自独立进程占 8001/8002/8003，可单独重启、独立扩缩容。
 
 ---
 
 ## 二、架构分层
 
 ```
-┌─────────────────────────────────────────────┐
-│         行智 · Journey Hub (8001)            │
-│   LangGraph 编排 + 意图路由 + 会话管理        │
-├──────────────┬──────────────────────────────┤
-│ 策程 · Planner Core │   感知 · Sense Engine   │
-│ 行程生成+存储+归档    │   航班/天气/路况监控     │
-│      (8002)         │       (8003)           │
-└──────────────┴──────────────────────────────┘
+                    ┌──────────────────────────────┐
+   前端工作台 3001  │  统一网关 (8001) · 单体模式    │
+   ─────────────────▶  /        行智 Journey Hub    │
+                    │  /planner 策程 Planner Core   │
+                    │  /sense   感知 Sense Engine   │
+                    └──────────────────────────────┘
+       微服务模式则在 8001 / 8002 / 8003 上分别独立运行
 ```
 
 **调用链路**：
@@ -80,14 +84,47 @@
 双击 `start.bat`（或 `CorporateJourneyHub.exe`），或命令行：
 
 ```bash
-python launcher.py            # 一键启动 → 自动开工作台 → 进入统一控制台
-python launcher.py stop       # 停止全部服务（先优雅后强杀）
-python launcher.py restart    # 重启全部
-python launcher.py status     # 查看服务状态
+python launcher.py                 # 一键启动（默认单体模式：单进程单端口 8001）→ 自动开工作台，窗口自动关闭
+python launcher.py micro           # 以微服务模式启动（8001/8002/8003 三进程）
+python launcher.py menu            # 常驻总控台（状态面板 + 启动/停止/重启/日志/清空数据一体化）
+python launcher.py stop            # 停止全部服务（含前端；覆盖两种模式端口，先优雅后强杀）
+python launcher.py restart         # 重启（当前模式）
+python launcher.py status          # 查看服务状态（并行探活，秒级返回）
+python launcher.py start micro     # 指定模式启动：start single|micro
+python launcher.py clean           # 清空运行数据（行程/审批/报销/画像/日志/缓存），不动服务
+python launcher.py fresh           # 干净启动：停止 → 清空运行数据 → 重新启动
 ```
 
-统一控制台支持：启动/停止/重启全部、查看服务日志、打开日志目录、打开工作台、刷新状态。
-后端 3 服务 + 前端均后台运行、日志落盘 `.logs/`；依赖增量检测（requirements.txt 变化才重装）。
+也可直接双击：**`总控台.bat`**（常驻总控台，含启动/停止/重启/日志/状态）、`停止.bat`（一键停全部）、`start.bat`（启动后自动收窗）、`干净启动.bat`（清空历史后启动）、`清空数据.bat`（只清不启）。
+默认 `start` 完成后启动窗口自动关闭，**重复双击不会叠出多个黑窗**（服务本体无窗口，日志落盘 `.logs/`）；
+后端 + 前端均后台运行，依赖增量检测（requirements.txt 变化才重装）；
+启动为并行拉起 + 增量健康检查（谁先就绪先报谁），单体模式冷启动约 6 秒就绪。
+
+**清空历史数据（解决"上次的行程/对话还在"）**
+
+`scripts/reset_data.py` 是底层清理脚本，`launcher.py` 在它之上封装了三个入口：
+
+| 场景 | 操作 | 效果 |
+|:---|:---|:---|
+| 清一次 | `清空数据.bat` / `python launcher.py clean` | 停止服务后清空运行数据（不重新启动） |
+| 干净启动 | `干净启动.bat` / `python launcher.py fresh` | 停止 → 清空 → 启动，工作台带 `?fresh=1` 顺带清前端对话快照 |
+| 每次都清 | 总控台按 `[11]` 开启 | 之后每次 `start.bat` 启动都会先清一遍（标记文件 `.cjh_fresh`，再去按一次即关闭） |
+
+清理范围：`data/trips`、`data/test_trips`、`data/org/approvals`、`data/org/reimbursements`、`data/profiles`、`.logs`、`.run`，以及 `__pycache__` / `.pytest_cache` / `frontend/node_modules/.vite` / `frontend/dist` 等缓存。
+**不会动**：`data/system/`（大模型与管理员配置）、`data/org/{departments,employees,policies,policy_docs}`（组织与政策种子）、`.env`、源码。
+
+删除前会整体搬到 `.backup/reset-<时间戳>/`（保留最近 3 份，可随时回滚）。需要连种子数据一起清：
+`python scripts/reset_data.py --scope full --reseed`（清完自动重灌组织/政策种子）；只看不动手用 `--dry-run`。
+
+**单体模式下的接口前缀**（对外只有一个 8001）：
+
+| 业务线 | 路径前缀 | 文档 |
+|:---|:---|:---|
+| 行智 Journey Hub | `/agent/*`、`/auth/*`、`/admin/*` | http://localhost:8001/docs |
+| 策程 Planner Core | `/planner/*`（如 `/planner/trips/generate`） | http://localhost:8001/planner/docs |
+| 感知 Sense Engine | `/sense/*`（如 `/sense/query`） | http://localhost:8001/sense/docs |
+
+服务索引：`GET http://localhost:8001/` 一键列出三条业务线的前缀与文档地址。
 
 ### 4.2.1 开发者手动启动（备用）
 
