@@ -52,15 +52,16 @@ _TRIP_UPDATE_FIELDS = {
 }
 
 
-def _deny_if_not_owner(trip: dict, session_id: str = ""):
+def _deny_if_not_owner(trip: dict, request: Request, session_id: str = ""):
     """行程属主校验（防 IDOR）。
 
-    调用方显式声明了身份（session_id）且与行程归属 user_id 不符时，
-    按 404 拒绝（不暴露行程存在性）。未声明身份的调用保持兼容放行，
-    P2 接入企业身份（SSO）后应改为强制校验。
+    只在调用方**声明了身份**时拒绝：身份取自登录态（Bearer token → username），
+    其次显式 session_id。与行程归属 user_id 不符时按 404 拒绝，不暴露行程存在性。
+    未声明身份（既无 Bearer 也无 session_id）的调用放行——直接调 API 与演示走这条。
     """
     owner = trip.get("user_id") or ""
-    if session_id and owner and session_id != owner:
+    declared = deps.declared_user_id(request, session_id)
+    if declared and owner and declared != owner:
         raise HTTPException(404, f"行程不存在: {trip.get('trip_id')}")
 
 
@@ -223,7 +224,7 @@ async def generate_trip(req: GenerateTripRequest, request: Request):
     if deps.llm_manager is None or deps.trip_store is None:
         raise HTTPException(503, "服务未就绪")
 
-    user_id = req.session_id or getattr(request.state, "workspace_id", "default")
+    user_id = deps.resolve_user_id(request, req.session_id)
 
     # 每次请求独立生成器实例：并发请求的 model 选择与解析结果互不干扰
     gen = ItineraryGenerator(deps.llm_manager, guide_store=deps.guide_store)
@@ -315,7 +316,7 @@ async def confirm_trip(req: ConfirmTripRequest, request: Request):
     if not isinstance(trip_dict, dict) or not (trip_dict.get("destination") or trip_dict.get("title")):
         raise HTTPException(400, "无效的行程草案（缺少目的地/标题）")
 
-    user_id = req.session_id or getattr(request.state, "workspace_id", "default")
+    user_id = deps.resolve_user_id(request, req.session_id)
     trip_dict["user_id"] = user_id
     if trip_dict.get("status") == "pending_approval":
         # 草案不应携带旧状态
@@ -348,21 +349,25 @@ async def confirm_trip(req: ConfirmTripRequest, request: Request):
 @router.get("/trips", tags=["行程管理"])
 async def list_trips(
     request: Request,
-    session_id: str = Query(default="", description="会话/用户 ID (兼容)"),
+    session_id: str = Query(default="", description="调用方身份（未登录时的兜底声明）"),
 ):
     """行程列表"""
-    user_id = session_id or getattr(request.state, "workspace_id", "default")
+    user_id = deps.resolve_user_id(request, session_id)
     trips = deps.trip_store.list_by_user(user_id)
     return {"trips": trips, "count": len(trips)}
 
 
 @router.get("/trips/{trip_id}", tags=["行程管理"])
-async def get_trip(trip_id: str, session_id: str = Query(default="", description="调用方身份（声明后做属主校验）")):
+async def get_trip(
+    trip_id: str,
+    request: Request,
+    session_id: str = Query(default="", description="调用方身份（声明后做属主校验）"),
+):
     """行程详情"""
     trip = deps.trip_store.get(trip_id)
     if not trip:
         raise HTTPException(404, f"行程不存在: {trip_id}")
-    _deny_if_not_owner(trip, session_id)
+    _deny_if_not_owner(trip, request, session_id)
     return trip
 
 
@@ -370,13 +375,14 @@ async def get_trip(trip_id: str, session_id: str = Query(default="", description
 async def update_trip(
     trip_id: str,
     req: UpdateTripRequest,
+    request: Request,
     session_id: str = Query(default="", description="调用方身份（声明后做属主校验）"),
 ):
     """编辑行程（仅允许更新白名单字段）"""
     trip = deps.trip_store.get(trip_id)
     if not trip:
         raise HTTPException(404, f"行程不存在: {trip_id}")
-    _deny_if_not_owner(trip, session_id)
+    _deny_if_not_owner(trip, request, session_id)
     # 字段白名单校验
     unknown_fields = set(req.data.keys()) - _TRIP_UPDATE_FIELDS
     if unknown_fields:
@@ -390,13 +396,14 @@ async def update_trip(
 @router.delete("/trips/{trip_id}", tags=["行程管理"])
 async def delete_trip(
     trip_id: str,
+    request: Request,
     session_id: str = Query(default="", description="调用方身份（声明后做属主校验）"),
 ):
     """删除行程"""
     trip = deps.trip_store.get(trip_id)
     if not trip:
         raise HTTPException(404, f"行程不存在: {trip_id}")
-    _deny_if_not_owner(trip, session_id)
+    _deny_if_not_owner(trip, request, session_id)
     deps.trip_store.delete(trip_id)
     return {"status": "ok", "trip_id": trip_id}
 
@@ -408,6 +415,7 @@ async def delete_trip(
 async def reroute_trip(
     trip_id: str,
     req: RerouteRequest,
+    request: Request,
     session_id: str = Query(default="", description="调用方身份（声明后做属主校验）"),
 ):
     """
@@ -421,7 +429,7 @@ async def reroute_trip(
     trip = deps.trip_store.get(trip_id)
     if not trip:
         raise HTTPException(404, f"行程不存在: {trip_id}")
-    _deny_if_not_owner(trip, session_id)
+    _deny_if_not_owner(trip, request, session_id)
     # PRD 3.5 审批门禁：待审批行程不允许调整
     if trip.get("status") == "pending_approval":
         raise HTTPException(409, "行程待主管审批，审批通过后才能调整")
@@ -447,12 +455,16 @@ async def reroute_trip(
 # 出行清单
 # ---------------------------------------------------------------------------
 @router.get("/trips/{trip_id}/checklist", tags=["行程管理"])
-async def get_checklist(trip_id: str, session_id: str = Query(default="")):
+async def get_checklist(
+    trip_id: str,
+    request: Request,
+    session_id: str = Query(default="", description="调用方身份（声明后做属主校验）"),
+):
     """获取出行清单"""
     trip = deps.trip_store.get(trip_id)
     if not trip:
         raise HTTPException(404, f"行程不存在: {trip_id}")
-    _deny_if_not_owner(trip, session_id)
+    _deny_if_not_owner(trip, request, session_id)
 
     # 如果行程已有 checklist，直接返回
     if trip.get("checklist"):
@@ -469,12 +481,16 @@ async def get_checklist(trip_id: str, session_id: str = Query(default="")):
 # 行程总结
 # ---------------------------------------------------------------------------
 @router.post("/trips/{trip_id}/summary", tags=["行程管理"])
-async def generate_summary(trip_id: str, session_id: str = Query(default="")):
+async def generate_summary(
+    trip_id: str,
+    request: Request,
+    session_id: str = Query(default="", description="调用方身份（声明后做属主校验）"),
+):
     """生成行程总结"""
     trip = deps.trip_store.get(trip_id)
     if not trip:
         raise HTTPException(404, f"行程不存在: {trip_id}")
-    _deny_if_not_owner(trip, session_id)
+    _deny_if_not_owner(trip, request, session_id)
 
     summary = deps.summary_gen.generate(trip)
     return {"trip_id": trip_id, "summary": summary}
@@ -484,7 +500,11 @@ async def generate_summary(trip_id: str, session_id: str = Query(default="")):
 # 消费统计 (PRD F4.1) —— 复用 SummaryGenerator._calc_expenses 逻辑
 # ---------------------------------------------------------------------------
 @router.get("/trips/{trip_id}/expenses", tags=["行程管理"])
-async def get_expenses(trip_id: str, session_id: str = Query(default="")):
+async def get_expenses(
+    trip_id: str,
+    request: Request,
+    session_id: str = Query(default="", description="调用方身份（声明后做属主校验）"),
+):
     """
     消费统计独立接口。
 
@@ -494,7 +514,7 @@ async def get_expenses(trip_id: str, session_id: str = Query(default="")):
     trip = deps.trip_store.get(trip_id)
     if not trip:
         raise HTTPException(404, f"行程不存在: {trip_id}")
-    _deny_if_not_owner(trip, session_id)
+    _deny_if_not_owner(trip, request, session_id)
 
     # 复用已有的花费计算逻辑 (静态方法，无需 LLM)
     expense_summary = SummaryGenerator._calc_expenses(trip, {})
@@ -696,7 +716,11 @@ def _render_itinerary_html(trip: dict) -> str:
 
 
 @router.get("/trips/{trip_id}/export", tags=["行程管理"])
-async def export_trip(trip_id: str, session_id: str = Query(default="")):
+async def export_trip(
+    trip_id: str,
+    request: Request,
+    session_id: str = Query(default="", description="调用方身份（声明后做属主校验）"),
+):
     """
     导出行程单：返回打印 / 另存为 PDF 友好的 HTML（零外部依赖）。
 
@@ -706,6 +730,6 @@ async def export_trip(trip_id: str, session_id: str = Query(default="")):
     trip = deps.trip_store.get(trip_id)
     if not trip:
         raise HTTPException(404, f"行程不存在: {trip_id}")
-    _deny_if_not_owner(trip, session_id)
+    _deny_if_not_owner(trip, request, session_id)
     html = _render_itinerary_html(trip)
     return HTMLResponse(content=html, media_type="text/html; charset=utf-8")

@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { Bell, RefreshCw, Info, Loader2, Plane, Cloud, Car, MapPin, Radio, Activity, ShieldAlert, TrainFront, Plus } from 'lucide-react';
 import { getMonitorStatus, manualCheck, subscribeMonitor } from '../api/sense';
 import { listTrips } from '../api/planner';
+import { currentUserId } from '../api/auth';
 import { PageHeader, StatCard, Badge, Button, EmptyState } from '../components';
 
 const SEVERITY_META = {
@@ -54,7 +55,7 @@ export default function AlertsPage() {
     setShowForm((v) => !v);
     if (!trips.length) {
       try {
-        const res = await listTrips('web-user');
+        const res = await listTrips();
         setTrips(res.trips || []);
       } catch { /* 列表加载失败不阻塞表单 */ }
     }
@@ -74,7 +75,7 @@ export default function AlertsPage() {
     try {
       await subscribeMonitor({
         trip_id: form.trip_id,
-        user_id: 'web-user',
+        user_id: currentUserId(),
         flight_number: form.flight_number.trim(),
         train_code: form.train_code.trim(),
         train_from: form.train_from.trim(),

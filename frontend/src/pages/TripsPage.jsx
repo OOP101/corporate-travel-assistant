@@ -32,7 +32,7 @@ export default function TripsPage() {
   const loadTrips = async () => {
     setLoading(true);
     try {
-      const data = await listTrips('web-user');
+      const data = await listTrips();
       setTrips(data.trips || []);
     } catch (e) {
       console.error(e);
@@ -115,7 +115,7 @@ export default function TripsPage() {
     if (!trip) return;
     generationStore.set({ status: 'confirming', statusText: '正在提交确认…' });
     try {
-      const res = await confirmTrip(trip, 'web-user');
+      const res = await confirmTrip(trip);
       const notes = (res.events || [])
         .map((e) => (e.event === 'policy' ? `${e.has_violations ? '⚠️' : '✅'} 政策检查：${e.content}` : e.event === 'approval' ? `🖊️ ${e.content}` : null))
         .filter(Boolean);

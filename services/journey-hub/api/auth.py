@@ -1,19 +1,21 @@
 """认证模块 —— 用户登录 / Token 签发 / 管理员守卫
 
-MVP 设计：
+设计：
 - 用户存 JSON（sha256+salt 口令哈希），启动时种子管理员账号
-- Token 为进程内存随机串（24h 过期），服务重启后需重新登录
+- Token 为 HMAC 签名的无状态串（24h 过期）：服务重启不掉线；planner-core 持有
+  同一 SESSION_SECRET 即可离线校验，无需回调本服务
 - 前端请求带 Authorization: Bearer <token>；管理接口额外校验 admin 角色
 """
 import hashlib
 import logging
 import secrets
-import time
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from shared.config import settings
+from shared.middleware.session import SignedSession
 from shared.store.base_store import BaseJsonStore
 
 logger = logging.getLogger("journey-hub.auth")
@@ -49,32 +51,28 @@ class UserStore(BaseJsonStore):
 
 
 class AuthService:
-    """内存 Token 管理"""
+    """无状态签名 Token 管理（HMAC-SHA256，跨服务可离线验证）"""
 
-    def __init__(self, ttl: int = TOKEN_TTL_SECONDS):
-        self._tokens: dict = {}
+    def __init__(self, ttl: int = TOKEN_TTL_SECONDS, secret: Optional[str] = None):
         self._ttl = ttl
+        self._secret = secret
+
+    @property
+    def secret(self) -> str:
+        return self._secret or settings.session_secret
 
     def issue(self, username: str, role: str) -> str:
-        token = secrets.token_hex(32)
-        self._tokens[token] = {
-            "username": username,
-            "role": role,
-            "expires_at": time.time() + self._ttl,
-        }
-        return token
+        return SignedSession.encode({"username": username, "role": role}, self.secret, self._ttl)
 
     def resolve(self, token: str) -> Optional[dict]:
-        info = self._tokens.get(token)
-        if not info:
-            return None
-        if info["expires_at"] < time.time():
-            self._tokens.pop(token, None)
-            return None
-        return info
+        return SignedSession.decode(token, self.secret)
 
     def revoke(self, token: str):
-        self._tokens.pop(token, None)
+        """无状态 token 无法单方面作废（前端登出即清本地副本）。
+
+        需要让全部在途 token 立刻失效时，改 SESSION_SECRET 即可。
+        """
+        return None
 
 
 auth_service = AuthService()
@@ -96,6 +94,21 @@ def require_admin(request: Request) -> dict:
     if user.get("role") != "admin":
         raise HTTPException(403, "需要管理员权限")
     return user
+
+
+def resolve_session_id(request: Request, fallback: str = "default") -> str:
+    """会话 / 用户身份：登录态优先（Bearer → username），未登录沿用调用方给的值。
+
+    登录态贯穿的起点：journey 把它当作 session_id 转发给 planner-core，
+    planner 侧在无 Bearer（服务间调用只带 X-API-Key）时认这个值。
+    """
+    auth_header = request.headers.get("Authorization", "")
+    token = auth_header[7:].strip() if auth_header.startswith("Bearer ") else ""
+    if token:
+        info = auth_service.resolve(token)
+        if info and info.get("username"):
+            return info["username"]
+    return fallback or "default"
 
 
 # ---------------------------------------------------------------------------

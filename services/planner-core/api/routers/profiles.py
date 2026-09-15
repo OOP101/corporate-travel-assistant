@@ -1,7 +1,7 @@
 """用户画像 Router —— 偏好画像 / 同行人 (PRD F1.2 / 7.4)"""
 from typing import List, Optional
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from .. import deps
@@ -27,21 +27,21 @@ class AddCompanionRequest(BaseModel):
 
 
 @router.get("/users/me/profile", tags=["用户画像"])
-async def get_profile(request: Request, session_id: str = Query(default="", description="会话/用户 ID (兼容)")):
-    """获取当前用户偏好画像"""
-    user_id = session_id or getattr(request.state, "workspace_id", "default")
+async def get_profile(request: Request):
+    """获取当前登录用户的偏好画像"""
+    user_id = deps.resolve_user_id(request)
     profile = deps.profile_store.get(user_id)
     return {"user_id": user_id, "profile": profile}
 
 
 @router.put("/users/me/profile", tags=["用户画像"])
-async def update_profile(req: UpdateProfileRequest, request: Request, session_id: str = Query(default="")):
+async def update_profile(req: UpdateProfileRequest, request: Request):
     """
     更新偏好画像 (部分更新)。
 
     仅传入字段会被覆盖，其余字段保留。返回更新后的完整画像。
     """
-    user_id = session_id or getattr(request.state, "workspace_id", "default")
+    user_id = deps.resolve_user_id(request)
     # 仅收集非 None 字段
     partial = {k: v for k, v in req.model_dump().items() if v is not None}
     if not partial:
@@ -51,18 +51,18 @@ async def update_profile(req: UpdateProfileRequest, request: Request, session_id
 
 
 @router.get("/users/me/companions", tags=["用户画像"])
-async def list_companions(request: Request, session_id: str = Query(default="")):
+async def list_companions(request: Request):
     """获取同行人列表"""
-    user_id = session_id or getattr(request.state, "workspace_id", "default")
+    user_id = deps.resolve_user_id(request)
     profile = deps.profile_store.get(user_id)
     companions = profile.get("companions", [])
     return {"user_id": user_id, "companions": companions, "count": len(companions)}
 
 
 @router.post("/users/me/companions", tags=["用户画像"])
-async def add_companion(req: AddCompanionRequest, request: Request, session_id: str = Query(default="")):
+async def add_companion(req: AddCompanionRequest, request: Request):
     """添加同行人"""
-    user_id = session_id or getattr(request.state, "workspace_id", "default")
+    user_id = deps.resolve_user_id(request)
     companion = {
         "name": req.name,
         "role": req.role,

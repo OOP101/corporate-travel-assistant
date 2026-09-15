@@ -1,8 +1,10 @@
 import { get, postEmpty, put, del, ssePost } from './client';
 
 // --- 行程 ---
-export async function listTrips(sessionId = 'default') {
-  return get(`/api/planner/trips?session_id=${sessionId}`);
+// 身份不由前端声明：planner 从 Authorization: Bearer 解出登录用户名
+// （client.js 的 authHeaders() 会自动附带）。未登录时回退到 API Key 的 workspace。
+export async function listTrips() {
+  return get('/api/planner/trips');
 }
 
 export async function getTrip(tripId) {
@@ -20,12 +22,12 @@ export async function updateTrip(tripId, data) {
 export function generateTripStream(query, preferences = {}, onChunk, params = {}) {
   // v2：params 为用户已确认的结构化参数（scene 等）；生成产物为「草案」未落库，
   // 确认后调 confirmTrip 落库 + 审批
-  return ssePost('/api/planner/trips/generate', { query, preferences, session_id: 'default', params }, onChunk);
+  return ssePost('/api/planner/trips/generate', { query, preferences, params }, onChunk);
 }
 
 // S4 → S5：确认行程草案（落库 + 政策检查 + 审批发起）
-export async function confirmTrip(trip, sessionId = 'default') {
-  return post('/api/planner/trips/confirm', { trip, session_id: sessionId });
+export async function confirmTrip(trip) {
+  return post('/api/planner/trips/confirm', { trip });
 }
 
 // --- 清单 ---
@@ -54,12 +56,12 @@ export async function getTripExportHtml(tripId) {
 }
 
 // --- 用户画像 ---
-export async function getProfile(sessionId = 'default') {
-  return get(`/api/planner/users/me/profile?session_id=${sessionId}`);
+export async function getProfile() {
+  return get('/api/planner/users/me/profile');
 }
 
-export async function updateProfile(data, sessionId = 'default') {
-  return put(`/api/planner/users/me/profile?session_id=${sessionId}`, data);
+export async function updateProfile(data) {
+  return put('/api/planner/users/me/profile', data);
 }
 
 // --- 模板 ---

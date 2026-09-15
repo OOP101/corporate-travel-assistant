@@ -32,7 +32,7 @@ from state import JourneyHubGraph
 from tools import ToolRegistry, ToolHandlers
 from memory.session import SessionManager
 # 相对导入：api 包名在三个服务中重名，单进程统一网关下按别名加载，故不用绝对包名
-from .auth import auth_router, UserStore
+from .auth import auth_router, UserStore, resolve_session_id
 from .admin import router as admin_router, DEFAULT_MODELS, CONFIG_ID, ConfigStore
 
 logger = logging.getLogger("journey-hub")
@@ -200,9 +200,10 @@ def agent_chat(req: ChatRequest, request: Request):
 
     active_sessions.labels(service="journey-hub").inc()
 
+    session_id = resolve_session_id(request, req.session_id)
     try:
         result = agent_hub.invoke(
-            session_id=req.session_id,
+            session_id=session_id,
             user_input=req.query,
             model=req.model,
         )
@@ -241,15 +242,17 @@ async def agent_chat_stream(req: ChatRequest, request: Request):
 
     active_sessions.labels(service="journey-hub").inc()
 
+    session_id = resolve_session_id(request, req.session_id)
+
     def generate():
-        ctx = TraceContext(session_id=req.session_id)
+        ctx = TraceContext(session_id=session_id)
         try:
             # 第1帧：正在分析意图
             yield sse_frame({"event": "route", "content": "正在分析意图..."})
 
             final_response = ""
             for evt in agent_hub.invoke_stream(
-                session_id=req.session_id,
+                session_id=session_id,
                 user_input=req.query,
                 model=req.model,
             ):
@@ -292,7 +295,7 @@ def agent_plan_confirm(req: PlanConfirmRequest, request: Request):
     handler = tool_registry.get_handler("confirm_trip") if tool_registry else None
     if handler is None:
         raise HTTPException(503, "确认服务未就绪")
-    result = handler(session_id=req.session_id, trip=req.trip)
+    result = handler(session_id=resolve_session_id(request, req.session_id), trip=req.trip)
     if not result.get("success"):
         raise HTTPException(502, result.get("message", "行程确认失败"))
     return result

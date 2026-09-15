@@ -23,7 +23,8 @@ class ApplyTemplateRequest(BaseModel):
 async def save_trip_as_template(
     trip_id: str,
     req: SaveTemplateRequest,
-    session_id: str = Query(default=""),
+    request: Request,
+    session_id: str = Query(default="", description="调用方身份（声明后做属主校验）"),
 ):
     """
     保存行程为模板。
@@ -35,7 +36,8 @@ async def save_trip_as_template(
     if not trip:
         raise HTTPException(404, f"行程不存在: {trip_id}")
     owner = trip.get("user_id") or ""
-    if session_id and owner and session_id != owner:
+    declared = deps.declared_user_id(request, session_id)
+    if declared and owner and declared != owner:
         raise HTTPException(404, f"行程不存在: {trip_id}")
 
     template = deps.template_store.save_as_template(
@@ -92,7 +94,7 @@ async def apply_template(template_id: str, req: ApplyTemplateRequest, request: R
     new_trip.update(overrides)
 
     # 归属用户
-    user_id = req.user_id or getattr(request.state, "workspace_id", "default")
+    user_id = req.user_id or deps.resolve_user_id(request)
     new_trip["user_id"] = user_id
 
     # 保存为新行程 (TripStore.save 会生成 trip_id 与时间戳)

@@ -10,9 +10,12 @@
  *  - 首次进入且无本地快照时，回放 journey-hub 服务端会话历史兜底。
  */
 import { chatStream, clearSession, getSessionHistory, confirmTripPlan } from '../api/journey';
+import { currentUserId } from '../api/auth';
 
-const SESSION_ID = 'web-user';
-const LS_KEY = 'cjh_chat_web-user';
+// 会话 ID 即登录用户名 —— 与 planner 侧 resolve_user_id 同一口径，
+// 服务端历史、行程归属、画像三者才不会各认各的。
+const SESSION_ID = currentUserId();
+const LS_KEY = `cjh_chat_${SESSION_ID}`;
 const MAX_STORED = 60; // localStorage 只保留最近 N 条，防止膨胀
 
 // 干净启动（launcher.py fresh / 自动清空）会以 ?fresh=1 打开工作台：

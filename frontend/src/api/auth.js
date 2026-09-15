@@ -26,6 +26,13 @@ export function isAdmin() {
   return getAuth()?.role === 'admin';
 }
 
+// 当前登录用户的身份标识 —— 用户名即 user_id / employee_id（种子数据里
+// employee_id 与登录名同值）。会话 ID、行程归属、画像都以此为准，
+// 三者口径一致才不会错位。未登录时回退到演示用户。
+export function currentUserId() {
+  return getAuth()?.username || 'web-user';
+}
+
 export async function login(username, password) {
   const res = await post('/api/journey/auth/login', { username, password });
   saveAuth(res);
