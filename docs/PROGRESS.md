@@ -174,10 +174,17 @@
 2. 服务端历史仍为进程内，重启即空（跨刷新持久靠 localStorage 快照）。
 3. P2 剩余项均受外部条件阻塞：SSO 等外部 IdP；真向量 RAG 需开通 embedding 权限或 `pip install sentence-transformers`（`BAAI/bge-large-zh-v1.5`，1024 维）。
 4. 可选深化：报表加时间范围过滤（?from=&to=）、导出 CSV/Excel、报销按费用类目透视。
-5. **改 C 端还差三项 P0**（07 号文档分级；`personal` 政策短路已完成，见上节，故四项 P0 只剩这三项）。三项均已逐行核实：
-   - **身份贯通**：`/users/me/*` 的 user_id 取自查询参数 `session_id or getattr(request.state, "workspace_id", "default")`（`api/routers/profiles.py:32/44/56/65`），**完全不读登录态**——不传 `session_id` 时所有用户落到 `"default"` 共享同一份画像。
-   - **Token 持久化**：`AuthService._tokens: dict = {}`（`api/auth.py:55`）存进程内存，服务重启全员掉线。
-   - **自助注册**：`api/auth.py` 只有 `/auth/login` + `/auth/logout` 两个路由，**没有注册接口**，账号靠 `scripts/seed_p1_data.py` 建。
+5. **改 C 端四项 P0：全部完成 ✅**
+   - ✅ **身份贯通**（已落地）：`shared/middleware/session.py` 新增 `SignedSession`；`api/routers/profiles.py`/`templates.py`/`trips.py` 全部改用 `deps.resolve_user_id(request, …)`，经 `deps.declared_user_id()` 读 `Authorization: Bearer` → username，未登录才回落显式 `session_id` / workspace。
+   - ✅ **Token 持久化**（已落地）：`AuthService` 由进程内 `_tokens: dict` 改为无状态签名 token（`issue()`=`SignedSession.encode`，`resolve()`=`SignedSession.decode`），服务重启不掉线；改 `SESSION_SECRET` 即可让全部在途 token 失效。新增 `SESSION_SECRET`（留空回退 `DEV_API_KEY`）。
+   - ✅ **自助注册**（已落地）：新增 `POST /auth/register` —— 注册即签发 token（注册即登录）。用户名 `3-32 位 [A-Za-z0-9_.-]`、大小写不敏感查重；`admin`/`web-user`/`default` 列为保留名（与组织侧 `employee_id` 同值，放开会继承他人档案与行程）；**角色不接受客户端指定**，新账号一律 `user`。前端 `LoginPage` 增登录/注册双模式。见 commit `0ba1df7`。
+   - ✅ **个人出行政策短路**：见上节「更正 ②」。
+
+6. **口令哈希升级（随注册一并落地）**：`UserStore` 由单轮 `sha256(salt+password)` 改为 **pbkdf2-sha256（12 万轮）**，标准库实现免额外依赖；写入带 `algo` 标记，旧记录仍可验证并在登录成功时**自动升级**；哈希比对改用 `secrets.compare_digest` 防时序侧信道。
+
+7. **测试基线（2026-09-15）**：`./.venv/Scripts/python.exe -m pytest --basetemp=./.pytest_tmp -q` → **150 passed / 0 failed**（121 → 150，新增 `tests/test_register.py` 29 例）。
+
+8. **文档冗余清单**：新建 `docs_企业智行/10-文档冗余清单（待决策）.md`（**只列不动，待拍板**）。核心结论：`docs/` 全保留；`05`（TravelAI 补齐清单）/`09`（C 端简历模板）前提已被否决、建议归档；`06` 两处结论已被 07 推翻；`README.md` 修正记录需更新；pptx 基于 8/30 旧版已过期。另发现**简历口径双源**（`02-简历表述.md` vs `docs/简历项目经历-企业智行.md`）与 `03` 持续落后 PROGRESS 两个风险。
 
 ## 本次会话交付（续）：外部服务接入（腾讯地图 / 和风天气 / 酒店 POI）
 - 触发：用户指出出发地未接地图 API key/未调用、天气工具未在规划链路调用、酒店/美团/携程未集成。核实结论：**全部属实**——`planner-core/**` 对 weather/traffic/geocode/sense 零引用，`shared/state/graph.py` 零引用；地图/和风仅存在于 sense-engine 的监控+问答直查路径且 key 为空（=mock）；酒店零 API 集成。根因：实时数据被设计成 sense-engine 的感知/监控+问答，与 planner 纯生成模块未打通，外部 key 以空串占位+mock 源。
