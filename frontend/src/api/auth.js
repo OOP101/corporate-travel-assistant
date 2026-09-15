@@ -39,6 +39,13 @@ export async function login(username, password) {
   return res;
 }
 
+// 自助注册 —— 注册成功即签发 Token（注册即登录），无需再走一次登录
+export async function register(username, password) {
+  const res = await post('/api/journey/auth/register', { username, password });
+  saveAuth(res);
+  return res;
+}
+
 export async function logout() {
   try {
     await post('/api/journey/auth/logout', {});
