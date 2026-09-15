@@ -26,11 +26,13 @@
   4. detached 进程在 AI 沙箱测试中可能被收割，属测试环境行为，非本文件 bug。
 """
 import hashlib
+import json
 import os
 import shutil
 import subprocess
 import sys
 import time
+import urllib.parse
 import urllib.request
 import webbrowser
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -542,9 +544,69 @@ def wait_for_health(mode: str = DEFAULT_MODE) -> bool:
     return False
 
 
-def open_browser(fresh: bool = False):
-    """打开工作台；fresh=True 时带 ?fresh=1，让前端顺手清掉上一次的对话快照。"""
-    url = APP_URL + ("?fresh=1" if fresh else "")
+# ---------------------------------------------------------------------------
+# 对话记录清理（只清对话，不动行程等业务数据）
+# ---------------------------------------------------------------------------
+def _dev_api_key() -> str:
+    """鉴权用的 API Key（与前端 X-API-Key 同源）：优先 .env 的 DEV_API_KEY。"""
+    val = os.getenv("DEV_API_KEY", "").strip()
+    if val:
+        return val
+    env_file = BASE_DIR / ".env"
+    try:
+        for line in env_file.read_text(encoding="utf-8", errors="ignore").splitlines():
+            line = line.strip()
+            if line.startswith("DEV_API_KEY="):
+                return line.split("=", 1)[1].strip().strip('"').strip("'")
+    except Exception:
+        pass
+    return "ak_dev_local"  # 开发后门默认值（非生产环境生效）
+
+
+def reset_chat_history(mode: str = DEFAULT_MODE):
+    """启动时清掉上一次的对话记录（服务端会话历史），行程等一概保留。
+
+    前端那半（localStorage 快照）由工作台 URL 的 ?fresh=1 负责；
+    这里负责服务端：清空 journey-hub 的 SessionManager 内存历史。
+    服务不可用 / 鉴权失败时静默跳过 —— 对话清不掉不该挡住启动。
+    """
+    try:
+        port = backends_for(normalize_mode(mode))[0][3]
+        headers = {"X-API-Key": _dev_api_key()}
+        url = f"http://127.0.0.1:{port}/agent/sessions"
+        # 先列出活跃会话，逐个清掉（含 agent_hub 侧）
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=3) as r:
+            data = json.loads(r.read().decode("utf-8", errors="ignore"))
+    except Exception:
+        return  # 服务未就绪 / 端点不可用：静默跳过，?fresh=1 仍会清前端
+
+    sids = [s.get("session_id") for s in (data or {}).get("sessions", []) if s.get("session_id")]
+    if not sids:
+        return
+    cleared = 0
+    for sid in sids:
+        try:
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{port}/agent/session/{urllib.parse.quote(sid)}/clear",
+                headers=headers,
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=3):
+                cleared += 1
+        except Exception:
+            pass
+    if cleared:
+        log(f"  {C_DIM}已清空 {cleared} 个会话的对话记录（行程等数据保留）{C_RESET}")
+
+
+def open_browser(reset_chat: bool = False):
+    """打开工作台；reset_chat=True 时带 ?fresh=1，让前端丢掉上一次的对话记录。
+
+    注意：?fresh=1 只清「对话」（前端 localStorage 快照 + 服务端会话历史），
+    行程 / 审批 / 报销 / 画像等业务数据一律保留 —— 这是与 run_reset() 的本质区别。
+    """
+    url = APP_URL + ("?fresh=1" if reset_chat else "")
     try:
         webbrowser.open(url)
         log(f"{C_GREEN}[OK]{C_RESET} 已打开工作台: {url}")
@@ -606,13 +668,13 @@ def confirm_clean(scope: str = "runtime") -> bool:
 
 
 def fresh_start(mode: str = DEFAULT_MODE):
-    """干净启动：停止 → 清空运行数据 → 正常启动（工作台带 ?fresh=1）。"""
+    """干净启动：停止 → 清空运行数据 → 正常启动（工作台带 ?fresh=1 清对话）。"""
     mode = normalize_mode(mode)
     log(f"{APP_TITLE} —— 干净启动 · {MODE_LABELS.get(mode, mode)}")
     stop_if_running()
     if run_reset("runtime") != 0:
         log(f"{C_YELLOW}[提示]{C_RESET} 清理未完全成功，仍继续启动；可稍后在本菜单重试清空。")
-    one_shot_start(mode, enter_menu=False, fresh=True, auto_fresh=False)
+    one_shot_start(mode, enter_menu=False, auto_fresh=False)
 
 
 # ---------------------------------------------------------------------------
@@ -650,7 +712,8 @@ def interactive_menu(mode: str = DEFAULT_MODE):
             current = new_mode
             start_all(current)
             wait_for_health(current)
-            open_browser()
+            reset_chat_history(current)
+            open_browser(reset_chat=True)
         elif choice == "3":
             stop_all()
         elif choice == "4":
@@ -658,7 +721,8 @@ def interactive_menu(mode: str = DEFAULT_MODE):
             time.sleep(1)
             start_all(current)
             wait_for_health(current)
-            open_browser()
+            reset_chat_history(current)
+            open_browser(reset_chat=True)
         elif choice == "5":
             names = [log_name for _, _, _, _, log_name in backends_for(current)] + [FRONTEND_LOG]
             disp = [d for _, d, _, _, _ in backends_for(current)] + ["前端工作台"]
@@ -677,7 +741,7 @@ def interactive_menu(mode: str = DEFAULT_MODE):
             else:
                 run(["xdg-open", str(LOG_DIR)], check=False)
         elif choice == "7":
-            open_browser()
+            open_browser(reset_chat=True)
         elif choice == "8":
             continue  # 回到循环顶自动刷新状态
         elif choice == "9":
@@ -710,13 +774,15 @@ def interactive_menu(mode: str = DEFAULT_MODE):
 
 
 def one_shot_start(mode: str = DEFAULT_MODE, enter_menu: bool = False,
-                   fresh: bool = False, auto_fresh: bool = True):
+                   auto_fresh: bool = True, reset_chat: bool = True):
     """完整一键链路：环境 → 依赖 → 并行启动 → 健康检查 → 开页面。
 
     默认单体模式（单进程单端口 8001）；默认不驻留窗口（enter_menu=False），
     双击 start.bat 的窗口启动完自动关闭，重复双击不会叠出一堆黑窗。
     常驻控制台用命令行 `python launcher.py menu`。
     auto_fresh=True 且存在 .cjh_fresh 标记时，启动前自动清空上次运行数据。
+    reset_chat=True（默认）时工作台以 ?fresh=1 打开，**只清对话记录**
+    （前端快照 + 服务端会话历史），行程等业务数据一律保留。
     """
     mode = normalize_mode(mode)
     log(f"{APP_TITLE} —— 一键启动 · {MODE_LABELS.get(mode, mode)}")
@@ -726,7 +792,6 @@ def one_shot_start(mode: str = DEFAULT_MODE, enter_menu: bool = False,
             log(f"{C_YELLOW}[自动清空]{C_RESET} 已开启「每次启动自动清空」，先清理上一次的运行数据…")
             stop_if_running()
             run_reset(_fresh_scope())
-            fresh = True   # 工作台带 ?fresh=1，前端也丢掉上一次的对话快照
 
         step("1/环境检查")
         check_python()
@@ -740,10 +805,15 @@ def one_shot_start(mode: str = DEFAULT_MODE, enter_menu: bool = False,
         if backends_up and is_port_alive(FRONTEND_PORT, path="/"):
             log()
             log(f"{C_GREEN}[OK]{C_RESET} 全套服务已在运行，无需启动。")
+            if reset_chat:
+                reset_chat_history(mode)
+            open_browser(reset_chat)
         else:
             start_all(mode)
             wait_for_health(mode)
-            open_browser(fresh)
+            if reset_chat:
+                reset_chat_history(mode)
+            open_browser(reset_chat)
 
         log()
         log(f"  工作台: {APP_URL}")
@@ -779,8 +849,14 @@ def _pause_if_tty():
 # CLI 入口：start / menu / stop / restart / status / clean / fresh（可带模式 single|micro）
 # ---------------------------------------------------------------------------
 def cli():
-    args = [a.strip() for a in sys.argv[1:] if a.strip()]
+    raw = [a.strip() for a in sys.argv[1:] if a.strip()]
+    # 先摘掉开关型参数，避免它们被误当成 action / mode
+    keep_chat = any(a.lower() in ("--keep-chat", "keep-chat") for a in raw)
+    reset_chat = not keep_chat
+    args = [a for a in raw if a.lower() not in ("--keep-chat", "keep-chat")]
+
     action = args[0].lower() if args else "start"
+    # 模式可能出现在第 2 位（start micro），或独占第 1 位（micro）
     mode_arg = args[1] if len(args) > 1 else (args[0] if args and args[0].lower() in MODE_ALIASES else None)
     mode = normalize_mode(mode_arg)
 
@@ -790,7 +866,7 @@ def cli():
     elif action == "restart":
         stop_all()
         time.sleep(1)
-        one_shot_start(mode, enter_menu=False)
+        one_shot_start(mode, enter_menu=False, reset_chat=reset_chat)
         _pause_if_tty()
     elif action == "status":
         all_up = status_table(mode)
@@ -799,7 +875,7 @@ def cli():
         _pause_if_tty()
         sys.exit(0 if all_up else 1)
     elif action in ("menu", "console"):
-        one_shot_start(mode, enter_menu=True)
+        one_shot_start(mode, enter_menu=True, reset_chat=reset_chat)
     elif action in ("clean", "reset"):
         scope = "full" if any(a in ("--full", "full") for a in args[1:]) else "runtime"
         passthrough = [a for a in args[1:] if a in ("--dry-run", "--no-backup", "--reseed")]
@@ -816,9 +892,9 @@ def cli():
         _pause_if_tty()
     elif action in MODE_ALIASES:
         # 只给了模式（如 launcher.py micro）：按该模式启动
-        one_shot_start(mode, enter_menu=False)
+        one_shot_start(mode, enter_menu=False, reset_chat=reset_chat)
     else:  # start —— 默认启动完即收窗（不叠窗；失败才会停留显示报错）
-        one_shot_start(mode, enter_menu=False)
+        one_shot_start(mode, enter_menu=False, reset_chat=reset_chat)
 
 
 if __name__ == "__main__":

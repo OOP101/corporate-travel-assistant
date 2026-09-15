@@ -18,13 +18,16 @@ const SESSION_ID = currentUserId();
 const LS_KEY = `cjh_chat_${SESSION_ID}`;
 const MAX_STORED = 60; // localStorage 只保留最近 N 条，防止膨胀
 
-// 干净启动（launcher.py fresh / 自动清空）会以 ?fresh=1 打开工作台：
-// 这里顺手丢掉上一次的对话快照，避免"清了后端、前端还显示旧对话"。
-// 只清对话缓存，不动登录态（cjh_auth）；参数用完即从地址栏摘掉，避免误伤后续刷新。
+// 每次启动（start.bat）都会以 ?fresh=1 打开工作台 —— 语义是「首页不带上次的对话记录」：
+//   前一半在这里丢掉 localStorage 对话快照；后一半标记 SKIP_SERVER_HISTORY，
+//   让 hydrate() 不再回放服务端会话历史兜底（launcher.py 也已顺手清了服务端）。
+// 只清对话，不动登录态（cjh_auth）、不动行程等业务数据；参数用完即从地址栏摘掉。
+let SKIP_SERVER_HISTORY = false;
 try {
   const params = new URLSearchParams(window.location.search);
   if (params.get('fresh') === '1') {
     localStorage.removeItem(LS_KEY);
+    SKIP_SERVER_HISTORY = true;
     params.delete('fresh');
     const qs = params.toString();
     window.history.replaceState({}, '', window.location.pathname + (qs ? `?${qs}` : '') + window.location.hash);
@@ -243,11 +246,14 @@ export const chatStore = {
     }
 
     // 2) 服务端会话历史兜底（进程内保留，服务重启后为空）
+    //    ?fresh=1（每次 start.bat 启动）时跳过 —— 用户要的就是"首页不带上次对话"
     let server = [];
-    try {
-      const res = await getSessionHistory(SESSION_ID, 20);
-      server = (res.messages || []).filter((m) => m.content).map(normalizeServerMsg);
-    } catch { /* 服务不可用则从问候语开始 */ }
+    if (!SKIP_SERVER_HISTORY) {
+      try {
+        const res = await getSessionHistory(SESSION_ID, 20);
+        server = (res.messages || []).filter((m) => m.content).map(normalizeServerMsg);
+      } catch { /* 服务不可用则从问候语开始 */ }
+    }
     state.messages = [GREETING, ...server];
     syncQuickFromLast();
     persist();
