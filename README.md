@@ -263,7 +263,7 @@ curl -X POST http://localhost:8003/monitor/subscribe \
 ## 七、目录结构
 
 ```
-ai-travel-assistant/
+corporate-journey-hub/
 ├── shared/                         # 平台复用层
 │   ├── config/settings.py          # 配置管理
 │   ├── llm/manager.py              # LLM 多服务商管理器
