@@ -22,6 +22,33 @@ class FakeHTTPResp:
         return self._payload
 
 
+class FakeSession:
+    """模拟 requests.Session。
+
+    ServiceClient 重构后不再持有长驻 self.session，而是每次请求 `_new_session()`
+    新建（规避 keep-alive 半关连接复用导致的偶发 404），故测试改为 patch
+    `_new_session`，返回一个记录调用参数的假 Session。
+    """
+
+    def __init__(self, resp, captured=None):
+        self._resp = resp
+        self._captured = captured if captured is not None else {}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def request(self, method, url, params=None, headers=None, timeout=None, **kw):
+        self._captured.update(method=method, url=url, params=params, headers=headers)
+        return self._resp
+
+    def post(self, url, json=None, headers=None, timeout=None, **kw):
+        self._captured.update(url=url, headers=headers)
+        return self._resp
+
+
 class FakeSSEResp:
     """模拟 requests.Response（SSE 流式，支持 with 上下文）"""
 
@@ -46,14 +73,10 @@ class FakeSSEResp:
 def test_get_parses_json_and_sends_api_key(monkeypatch):
     client = ServiceClient(api_key="ak_test_key")
     captured = {}
-
-    def fake_request(method, url, params=None, headers=None, timeout=None, **kw):
-        captured["method"] = method
-        captured["url"] = url
-        captured["headers"] = headers
-        return FakeHTTPResp({"trips": [], "count": 0})
-
-    monkeypatch.setattr(client.session, "request", fake_request)
+    monkeypatch.setattr(
+        client, "_new_session",
+        lambda: FakeSession(FakeHTTPResp({"trips": [], "count": 0}), captured),
+    )
     data = client.get("http://planner.test/trips", params={"session_id": "u1"})
     assert data["count"] == 0
     assert captured["method"] == "GET"
@@ -64,8 +87,8 @@ def test_get_parses_json_and_sends_api_key(monkeypatch):
 def test_http_error_raises(monkeypatch):
     client = ServiceClient(api_key="ak_x")
     monkeypatch.setattr(
-        client.session, "request",
-        lambda *a, **kw: FakeHTTPResp({"detail": "no"}, status_code=404),
+        client, "_new_session",
+        lambda: FakeSession(FakeHTTPResp({"detail": "no"}, status_code=404)),
     )
     with pytest.raises(Exception):
         client.get("http://planner.test/missing")
@@ -82,7 +105,7 @@ def test_post_stream_parses_sse_frames(monkeypatch):
         "data: [DONE]",
         'data: {"event": "never", "content": "unreachable"}',
     ]
-    monkeypatch.setattr(client.session, "post", lambda *a, **kw: FakeSSEResp(lines))
+    monkeypatch.setattr(client, "_new_session", lambda: FakeSession(FakeSSEResp(lines)))
 
     events = list(client.post_stream("http://planner.test/trips/generate", json={}))
     assert [e["event"] for e in events] == ["status", "done"]
