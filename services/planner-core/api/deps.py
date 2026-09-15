@@ -11,6 +11,7 @@ from archive import SummaryGenerator
 from store import (
     TripStore, ProfileStore, TemplateStore,
     DepartmentStore, EmployeeStore, PolicyStore, ApprovalStore, ReimbursementStore, PolicyDocumentStore,
+    TravelGuideStore,
 )
 
 trip_store: Optional[TripStore] = None
@@ -28,3 +29,6 @@ policy_store: Optional[PolicyStore] = None
 approval_store: Optional[ApprovalStore] = None
 reimbursement_store: Optional[ReimbursementStore] = None
 policy_doc_store: Optional[PolicyDocumentStore] = None
+
+# C 端个人出行：景点 / 攻略语料（与政策文档共用 DocumentCorpusStore 能力）
+guide_store: Optional[TravelGuideStore] = None

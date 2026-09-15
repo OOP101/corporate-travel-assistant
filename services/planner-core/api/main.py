@@ -14,6 +14,7 @@ API 总览:
   组织:   /departments · /employees (CRUD)
   政策:   /policies (CRUD) · GET /policies/match · POST /policies/check
   文档:   /policy-docs (CRUD) · POST /policy-docs/search (RAG) · POST /policy-docs/reindex
+  景点:   /guides (CRUD) · POST /guides/search (RAG) · POST /guides/reindex （个人出行语料）
   审批:   /approvals (CRUD) · POST /approvals/{id}/approve|reject|cancel
   报销:   /reimbursements (CRUD) · POST /reimbursements/{id}/approve|reject|pay
   报表:   /reports/overview · /reports/by-department · /reports/by-month
@@ -37,12 +38,14 @@ from archive import SummaryGenerator
 from store import (
     TripStore, ProfileStore, TemplateStore,
     DepartmentStore, EmployeeStore, PolicyStore, ApprovalStore, ReimbursementStore, PolicyDocumentStore,
+    TravelGuideStore,
 )
 
-from api import deps
-from api.routers import (
+# 相对导入：api 包名在三个服务中重名，单进程统一网关下按别名加载，故不用绝对包名
+from . import deps
+from .routers import (
     trips_router, profiles_router, templates_router,
-    org_router, policy_router, policy_docs_router, approvals_router,
+    org_router, policy_router, policy_docs_router, guides_router, approvals_router,
     reimbursements_router, reports_router,
 )
 
@@ -109,6 +112,8 @@ async def lifespan(app: FastAPI):
     deps.approval_store = ApprovalStore(data_dir=os.path.join(org_data_dir, "approvals"))
     deps.reimbursement_store = ReimbursementStore(data_dir=os.path.join(org_data_dir, "reimbursements"))
     deps.policy_doc_store = PolicyDocumentStore(data_dir=os.path.join(org_data_dir, "policy_docs"))
+    # C 端景点/攻略语料（与政策文档分离存储，避免企业/个人数据混在一起）
+    deps.guide_store = TravelGuideStore(data_dir=os.path.join(org_data_dir, "guide_docs"))
 
     # Embedding（可插拔：local 本地 bge / api OpenAI 兼容 / none 关闭）
     embedder = EmbeddingManager(
@@ -151,6 +156,7 @@ app = create_app(
         {"name": "组织管理", "description": "部门、员工、职级管理"},
         {"name": "差旅政策", "description": "差旅政策配置、违规检查"},
         {"name": "政策文档", "description": "政策文档管理、RAG 检索"},
+        {"name": "景点攻略", "description": "景点/攻略语料管理、RAG 检索（个人出行）"},
         {"name": "审批管理", "description": "行程审批流转"},
         {"name": "系统", "description": "健康检查、Prometheus 指标"},
     ],
@@ -162,6 +168,7 @@ app.include_router(templates_router)
 app.include_router(org_router)
 app.include_router(policy_router)
 app.include_router(policy_docs_router)
+app.include_router(guides_router)
 app.include_router(approvals_router)
 app.include_router(reimbursements_router)
 app.include_router(reports_router)
