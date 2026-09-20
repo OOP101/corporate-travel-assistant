@@ -1,3 +1,9 @@
+# 企业智行 · PRD 合集
+
+> 三份 PRD 合并为单文件维护（2026-09-20）：一、行程规划对话流程 v2（主流程权威）；二、出行要素产品闭环 v1（Phase 1 待落地）；三、外部服务接入（腾讯地图 / 和风天气 / 酒店）。
+
+---
+
 # PRD · 行程规划对话流程（v2 重写）
 
 > 版本：v2（2026-09-03 重写）｜ 适用：ChatPage 对话入口 + TripsPage 规划入口 ｜ 状态：待评审 → 按本 PRD 改造 planner-core / journey-hub / 前端  
@@ -236,3 +242,251 @@ TripsPage 与 ChatPage 共用同一「方案确认卡片」组件：
 3. `itinerary.py` L36-91 `PLANNING_RULES`：无 scene 概念、无差旅约束 → 按 scene 拆分规则块。
 4. `TripsPage.jsx` L236-239：表单仅 query → 加 scene 下拉 + 结构化补充字段。
 5. journey plan 流程：缺 clarify/confirm 帧与确认门禁 → 见 §9。
+
+---
+
+# PRD · 出行要素产品闭环 v1
+
+> 需求来源：2026-09-18 用户实测反馈——「行程的安排很多都是大模型写的文本，没有路线制定、酒店选择、出行选择、天气查询、车票机票高铁火车；实时监控需要后续导入；首页应显示当前定位、天气查询和目的地天气预览」。
+> 关联文档：本文第三章（外部服务技术细节）、本文第一章（S1~S5 对话流程）。
+> 状态基线：行程生成已模板直出（商务类 0 LLM）；`trip_saved` 后已自动订阅监控。本文档只覆盖**尚未闭环的出行要素**。
+
+---
+
+## 一、需求总览
+
+| 编号 | 需求 | 优先级 | 后端现状 | 前端现状 | 外部依赖 |
+|:---|:---|:---|:---|:---|:---|
+| R1 | 首页出行信息卡（定位 + 本地天气 + 目的地天气预览） | **P0** | 直查接口已有（`POST /sense/query`） | ❌ 无 | 腾讯地图 + 和风（免费额度） |
+| R2 | 行程单结构化交通方案（航班/车次候选） | P1 | ❌ 无（纯文本话术） | ❌ 无 | P2 用种子数据，P3 接票务 API |
+| R3 | 酒店选择（候选展示 + 确认页选定） | **P0** | ✅ 已挂 `hotel_options` | ❌ 不展示 | 腾讯地图 Key |
+| R4 | 路线制定与展示（城际 + 每日活动衔接） | P1 | 部分（`route` 城际驾车已挂） | ❌ 不展示 | 腾讯地图 Key |
+| R5 | 天气查询（行程详情逐日天气 + 行前提醒） | **P0** | ✅ 已挂 `weather_forecast` | ❌ 不展示 | 和风 Key |
+| R6 | 真实票务数据（航班/火车实时余票价格） | P2 | ❌ 无 | ❌ 无 | **商用 API 采购**（阻塞） |
+| R7 | 实时监控串联收尾（提醒进行程详情 + 主动推送） | **P0** | ✅ 大半已有 | 部分（独立提醒页有） | 无 |
+
+**核心判断**：缺口的大头不是「没做」，而是「做了没串起来」——后端 enrichment（酒店/天气/城际路线）与监控直查能力都在，卡在三点：①`.env` 两个 Key 为空导致数据永远为空；②前端行程详情/首页完全不展示这些字段；③交通只有大模型文本，无结构化候选。**P0 三项（R1/R3+R5 展示/R7）零采购、一个前端迭代可闭环**（Key 有免费额度）。
+
+---
+
+## 二、已完成基线（不重复立项）
+
+| 能力 | 状态 | 说明 |
+|:---|:---|:---|
+| 商务行程模板直出 | ✅ 2026-09-18 | `generators/template.py`，典型差旅句式全链路 0 LLM（19.2s→0ms） |
+| 规则式参数抽取 | ✅ 2026-09-18 | `generators/fast_extract.py`，命中必填即跳过 LLM 抽取 |
+| S5 确认后自动订阅监控 | ✅ 2026-09-17 | `trip_saved` 帧平铺字段，前端自动订天气/路况/景点 |
+| 监控订阅/提醒持久化 | ✅ 2026-09-15 | `data/sense` 落盘 + 原子写，APScheduler 5 分钟轮询 |
+| 外部数据 enrichment 链路 | ✅ 代码就绪 | `_enrich_external` 挂 geo/route/weather/hotels，`external_data.real` 标记真实性 |
+
+---
+
+## 三、需求详情
+
+### R1 首页出行信息卡（P0）
+
+**用户原话**：「首页应该显示基础的当前定位、天气查询和目的地天气预览」。
+
+**现状**：`ChatPage.jsx` 首页空对话视图只有问候语 + 示例按钮，无任何定位/天气元素。
+
+**方案**：
+1. 浏览器 `Geolocation API` 获取坐标（用户授权）→ 腾讯地图逆地理编码取城市名 → 和风实况 + 3 日预报，渲染「出行信息卡」置顶首页；
+2. 目的地天气预览：会话中存在进行中的行程目的地时（`generationStore`/`chatStore` 已有），卡片右侧并列展示目的地天气；
+3. 降级链：拒绝授权 → 手动选城市（城市选择器）；无 Key → 卡片显示「地图/天气服务未配置」占位并附配置指引——**不编造数据**（沿用 `external_data.real` 铁律）。
+
+**涉及模块**：前端新增 `HomeWeatherCard` 组件；天气数据复用 sense-engine `POST /query`（type=weather，同步直查，符合「问答直查、异常才订阅」既有分工）；后端如需逆地理编码新增 `/geo/reverse` 直通端点。
+
+**验收**：授权定位后首页 2 秒内显示「当前城市 + 实况温度/天气 + 未来 3 日」；生成行程后卡片出现目的地天气并列预览；无 Key 时占位不报错。
+
+### R3 酒店选择（P0）
+
+**用户原话**：「酒店选择也没有」。
+
+**现状**：`itinerary.py` 的 `_attach_external` 已把腾讯地图 POI 挂为 `trip.hotel_options`；但 ①`.env` `TENCENT_MAP_KEY` 为空 → 永远 None；②前端行程详情无住宿区块。
+
+**方案**：
+1. **Phase 1（展示）**：行程详情新增「出行信息」tab 的住宿区块——有 `hotel_options` 渲染 POI 列表（名称/距离/地址），无则显示「未配置」占位；
+2. **Phase 2（选定）**：确认页支持从候选中选定酒店 → 写入 `trip.hotel` 字段，行程单住宿活动与模板预算（`_HOTEL_PER_NIGHT` 口径）随之替换；政策检查沿用现有住宿限额逻辑。
+
+**涉及模块**：前端 `TripDetailPage` / 确认卡组件；后端 confirm 接口补 `hotel` 字段透传（白名单 `_TRIP_UPDATE_FIELDS` 同步加）。
+
+**验收**：配置 Key 后生成的行程展示目的地酒店候选；选定后行程单与预算联动。
+
+### R5 天气查询（P0）
+
+**用户原话**：「天气查询也没有」。
+
+**现状**：和风 7 日预报已挂 `trip.weather_forecast`（Key 空则 None）；sense-engine 已有天气订阅与提醒；前端零展示。
+
+**方案**：行程详情「出行信息」tab 渲染目的地逐日天气（日期/白天夜间/温度/降水），数据缺失显示占位；行前 1 日恶劣天气提醒走既有订阅链路（R7），不另起炉灶。
+
+**验收**：有 Key 时行程详情可见逐日天气；无 Key 占位不报错；行程期遇预警（mock 或真实）能在提醒页看到。
+
+### R7 实时监控串联收尾（P0）
+
+**用户原话**：「实时监控也需要后续导入」。
+
+**现状**：自动订阅已接（S5 确认后）；提醒页 `AlertsPage` 独立存在；行程详情内看不到该行程的提醒；提醒靠 5 分钟轮询产生，前端无主动推送帧。
+
+**方案**：
+1. 行程详情新增「出行提醒」区块，复用 `GET /sense/trips/{id}/alerts`（`sense.js::getAlerts` 已有）；
+2. 主动推送：journey-hub SSE 通道新增 `alert` 事件帧，sense 产生新提醒时由网关转发（复用既有 SSE 契约，前端 chatStore 加一个分支渲染提醒条）；
+3. 数据源：mock 源随机出提醒是特性不是 bug，接真实源（和风预警/腾讯路况）后自然收敛——列入 Phase 2 数据源接入。
+
+**验收**：确认行程后详情页可见订阅状态与提醒列表；监控出新提醒时在线会话能收到推送条（不刷新页面）。
+
+### R4 路线制定与展示（P1）
+
+**用户原话**：「没有路线制定」。
+
+**现状**：城际驾车路线（`distance_km/duration_min`）已挂 `trip.route`；每日活动之间的衔接只有大模型文本话术；前端不展示任何路线。
+
+**方案**：
+1. **Phase 1（展示）**：「出行信息」tab 城际路线卡；每日活动列表相邻两项之间显示衔接提示（起止地点 → 腾讯地图算路 → 步行/驾车 X 分钟）；
+2. **Phase 2（优化）**：活动按坐标地理聚类微调排序（减少折返）；路线失败/无坐标时静默跳过，不阻断。
+
+**验收**：配置 Key 后行程详情可见城际距离时长与每日衔接时长；无 Key 全部静默降级。
+
+### R2 结构化交通方案（P1）
+
+**用户原话**：「出行选择…车票 机票 高铁火车也没有」。
+
+**现状**：模板直出与大模型输出均只有文本话术（「乘机 广州→北京，按实际出票核对」），无候选列表；确认页「交通方式可更换」只支持 airplane/train/drive 三态切换，无班次。
+
+**方案**：行程 dict 新增 `transport_options: [{type, no, dep_time, arr_time, dep_hub, arr_hub, duration, price_est}]`：
+1. **Phase 2**：内置主要城市对**种子时刻表**（明确标注「候选示例，非实时」），模板直出与大模型路径统一挂载；确认页可点选班次写入行程；
+2. **Phase 3**：数据源抽象层 `TicketProvider`（mock / 真实可切换），接 R6 真实 API 后同一结构替换数据来源。
+
+**验收**：行程详情显示往返交通候选卡；选定后行程单交通活动带班次号；未配置真实数据时明确标注「示例」。
+
+### R6 真实票务数据（P2，外部采购阻塞）
+
+**现状**：无任何票务 API。
+
+**方案**：先落 `TicketProvider` 抽象（`shared/providers/`，与 geo 客户端同风格：Key 空/失败返回 None 不阻断）；候选数据源——航班（VariFlight / 携程商旅 API）、火车（12306 无开放 API，需商用授权或代理服务商）。
+
+**前置条件**：商务采购 / Key 申请，**本迭代不动工**，只预留接口与 mock。
+
+---
+
+## 四、里程碑
+
+| 阶段 | 范围 | 外部依赖 | 预期效果 |
+|:---|:---|:---|:---|
+| **Phase 1（零采购，先串起来）** | R1 首页出行卡；R3/R5 「出行信息」tab 展示酒店+天气；R4 城际路线展示；R7 提醒进详情页 + SSE 推送帧 | 申请腾讯地图 + 和风免费 Key（`.env` 两个变量） | 行程从「大模型文本」变成「有天气、有酒店、有路线、有提醒的完整行程单」；首页有定位与天气 |
+| **Phase 2（结构化）** | R2 种子时刻表 + 确认页选班次/酒店写入；R4 活动地理聚类；R7 接真实天气预警/路况数据源 | 无新采购 | 出行选择从话术变成可点选的结构化候选 |
+| **Phase 3（真实票务）** | R6 `TicketProvider` 接真实航班/火车 API，替换种子数据 | 商用 API 采购（阻塞项，提前启动申请） | 交通候选实时余票价格 |
+
+---
+
+## 五、外部服务与 Key 依赖清单
+
+| Key（`.env` 变量） | 服务 | 用途 | 费用 | 阻塞需求 |
+|:---|:---|:---|:---|:---|
+| `TENCENT_MAP_KEY`（+SK） | 腾讯位置服务 | 逆地理编码（R1 定位）、POI 酒店（R3）、算路（R4） | 免费额度充足 | R1/R3/R4 |
+| `WEATHER_API_KEY` | 和风天气 | 实况+预报（R1/R5）、天气预警（R7 真实源） | 免费额度充足 | R1/R5/R7 |
+| 票务数据源（待选型） | VariFlight / 携程商旅 / 火车票服务商 | 实时航班/车次（R6） | 商用采购 | R6 / Phase 3 |
+
+**铁律**：任何 Key 缺失或调用失败一律显示「未配置」占位或静默降级，**不编造天气/酒店/票价数据**；真实数据以 `external_data.real=true` 标记后，才注入提示词与行程单（既有约定延续）。
+
+---
+
+## 六、验收口径（整包）
+
+1. **有 Key 全链路**：首页显示定位+本地天气+目的地预览 → 对话生成行程（秒级）→ 确认落库 → 详情页可见逐日天气/酒店候选/城际路线/每日衔接/出行提醒 → 监控出提醒在线推送。
+2. **无 Key 降级链路**：所有位置占位显示「未配置」，流程不报错不阻断，行程照常生成与确认。
+3. **性能不回退**：商务行程草案保持在秒级以内（模板直出基线），新增 enrichment 不得引入同步阻塞（外部调用均有超时与 None 兜底）。
+
+---
+
+# PRD 补充章 · 外部服务接入（腾讯地图 / 和风天气 / 酒店 POI）
+
+> 配套：PRD.md 第一章（流程篇）。本篇解决"规划链路完全不消费任何外部实时/地理/预订服务"的缺口。
+> 决策来源（2026-08-27 用户拍板三项全做 + 提供真实 key；2026-09-03 起地图供应商由高德切换为**腾讯位置服务**）：用户提供腾讯地图 key + SecretKey(SK) + 和风天气真实 key；酒店走腾讯地图 POI 结构化候选（携程/美团开放 API 为合作伙伴白名单，个人/小团队拿不到，不纳入）。
+
+## 1. 现状（已核实）
+
+| 能力 | 配置 | 真实代码 | 现接链路 | 实际效果 |
+|---|---|---|---|---|
+| 腾讯地图（地理编码/路线） | `TENCENT_MAP_KEY=` + `TENCENT_MAP_SK=` 空 | `shared/geo/tencent_client.py`（planner 与 sense-engine 共用） | 规划链路 enrich + 监控路况 | key 空→走降级（None/mock）；填 key 后真实调用 |
+| 天气 | `WEATHER_API_KEY=` 空 | `shared/geo/qweather_client.py` + `sense-engine/sources/weather.py` | 规划链路 enrich + 监控 + 问答 | 规划时调用；key 空→问答也是 mock |
+| 酒店/美团/携程 | 无 | 零 API 集成（仅腾讯地图 POI 候选） | 无 | 房型/价格/余量均为 LLM 编造 |
+
+根因（已修复）：实时数据曾被设计成 sense-engine 的「感知/监控 + 问答直查」，与 planner-core 纯生成模块未打通；现 `shared/geo` 作为共用客户端，planner 在 **extract 之后、LLM 生成之前** enrich，并注入提示词与行程单。
+
+## 2. 目标
+
+规划（plan）链路在**提取参数之后、LLM 生成之前**消费三类外部数据，并注入生成提示词与行程单：
+
+- **地理编码**：出发地/目的地 → 经纬度（WGS84），为路线与 POI 提供坐标。
+- **路线规划**：出发地→目的地驾车距离/时长，写入行程单 `route`。
+- **天气**：目的地逐日预报（和风 `v7/weather/7d`），作为生成约束（恶劣天气日避让户外）。
+- **酒店候选**：目的地周边酒店 POI（腾讯地图 `ws/place/v1/search`，boundary=nearby），结构化候选注入住宿安排。
+
+## 3. 架构
+
+```
+用户需求
+  └─ planner-core /trips/generate
+       ├─ _extract_params (LLM)            → destination/origin/start_date/days
+       ├─ _enrich_external (新增, 同步)     → 调 shared.geo
+       │     ├─ TencentMapClient.geocode(origin/destination)
+       │     ├─ TencentMapClient.driving_route(origin_geo, dest_geo)
+       │     ├─ QWeatherClient.forecast_7d(destination)
+       │     └─ TencentMapClient.poi_hotels(destination)
+       ├─ _build_generation_prompt(params, ext)  → 把 ext 注入提示词约束
+       ├─ llm.chat_stream                  → 行程 JSON
+       └─ _parse_trip_text + _attach_external  → trip_dict 挂 geo/route/weather_forecast/hotel_options
+```
+
+`shared/geo`（planner 与 sense-engine 共用）：
+- `TencentMapClient`：geocode / driving_route / poi_hotels。key 空→返回 `None`。**开启 SN 校验时需 SecretKey(SK) 做 md5 签名**，签名规则 `sig=md5(请求路径?按参数名升序拼接的原始参数+SK)`，sig 作为额外参数传入；SK 缺失时自动跳过签名（适用于未开启 SN 校验的 key）。
+- `QWeatherClient`：forecast_7d。key 空→返回 `None`。
+- 任意外部调用失败一律 `except → None`，**绝不阻断生成**。
+
+降级原则（关键，避免再次"编造"）：
+- **有 key + 调用成功** → 注入真实数据到提示词与行程单，并在行程单标注数据来源。
+- **无 key 或调用失败** → 不注入任何假天气/假酒店到提示词（仅附注"实时数据未接入"），行程单对应字段为 `null`/`[]`，前端明确显示"未接入"。
+
+## 4. 各能力规格
+
+### 4.1 腾讯位置服务（TencentMapClient）
+- 域名 `https://apis.map.qq.com`，需 `key` + （SN 校验时）`SecretKey(SK)` 签名。
+- `geocode(address) -> {"lng","lat","address"} | None`：端点 `/ws/geocoder/v1`，返回 `result.location.lat/lng` 与 `title`。
+- `driving_route(origin_geo, dest_geo) -> {"distance_km","duration_min"} | None`：端点 `/ws/direction/v1/driving`，`from/to` 格式为 `lat,lng`（**与高德 lng,lat 相反**），返回 `result.routes[0].distance`(米)/`duration`(秒)。
+- `poi_hotels(city=None, geo=None, keyword="酒店", limit=6) -> [{name,address,tel,type,lng,lat}] | None`：端点 `/ws/place/v1/search`，`boundary=nearby(lat,lng,5000)`（有坐标时）或 `region(城市,0)`，`page_size=limit`，返回 `data[]`（title/address/location.lat-lng）。
+
+### 4.2 和风天气（QWeatherClient）
+- `forecast_7d(location) -> [{date,cond_day,cond_night,temp_max,temp_min,precip,wind_day}] | None`：先 `geo/v2/city/lookup` 取 city_id，再 `v7/weather/7d`。
+- 生成约束：逐日 `cond_day` 含 暴雨/台风/雷阵雨/大雪 → 当日避免户外景点，改室内备选；`temp_max>=35` 或 `temp_min<=0` → tips 提示防暑/保暖。
+
+### 4.3 酒店结构化候选
+- 仅腾讯地图 POI 结构化候选（名称/地址/电话/坐标），**非实时报价/余量**。
+- 生成约束：住宿优先从候选选，标注「推荐酒店」；明确不承诺价格与可订性。
+
+## 5. 注入点（代码落点）
+
+- 新增：`shared/geo/__init__.py`、`shared/geo/tencent_client.py`、`shared/geo/qweather_client.py`
+- 修改：`services/planner-core/generators/itinerary.py`
+  - `generate()` / `generate_stream()`：extract 后调 `_enrich_external(params)`，生成后 `_attach_external(trip_dict, ext)`。
+  - `_build_generation_prompt(params, query, preferences, ext=None)`：追加 `_external_prompt_block(ext, params)`。
+  - 新增 `_enrich_external` / `_external_prompt_block` / `_attach_external` / `_empty_ext`。
+  - `_demo_generate` 返回也经 `_attach_external` 挂空占位，保证结构一致。
+- 修改：`services/sense-engine/sources/traffic.py`：原高德调用改为复用 `shared.geo.TencentMapClient`（geocode + driving_route），拥堵等级由「实际时长/自由流时长」启发式估算；key 空→mock。
+- 配置：`shared/config/settings.py` 新增 `tencent_map_key`(env `TENCENT_MAP_KEY`) 与 `tencent_map_sk`(env `TENCENT_MAP_SK`)，移除 `amap_api_key`；`.env` 与 `docker-compose.yml` 同步替换。
+- 落库字段（trip dict 增量，不改 Trip dataclass）：`geo`、`route`、`weather_forecast`、`hotel_options`、`external_data.real`。
+
+## 6. 验收
+
+- U-E1：`.env` 填 `TENCENT_MAP_KEY`/`TENCENT_MAP_SK`/`WEATHER_API_KEY` 后，规划一次真实目的地，行程单 `geo` 含经纬度、`weather_forecast` 为真实逐日、`hotel_options` 为真实候选，`external_data.real=true`。
+- U-E2：key 为空时，规划不报错、不注入假数据，`external_data.real=false`，前端显"实时数据未接入"。
+- U-E3：腾讯/和风服务不可达或 key 非法时，规划仍成功（ext 全 None），不抛异常、不混入错误 JSON。
+- U-E4：恶劣天气日（如预报暴雨）生成的行程不含户外景点（人工/用例核验提示词约束生效）。
+- U-E5：任一外部调用超时（>15s）被客户端截断，不拖垮整体生成。
+
+## 7. 不在本期
+
+- 携程/美团/聚合酒店 API 真实预订（白名单/商务合作门槛）。
+- 前端行程详情页天气徽标/酒店候选展示（任务 #22，结构先落库）。
+- 腾讯地图驾车路线的逐段实时拥堵指数（需额外 traffic 参数；当前用时长比启发式估算，见 §5 traffic.py）。
+
