@@ -30,6 +30,8 @@ from shared.models import (
     Trip, TripDay, Activity, ActivityType, TripStatus,
     Location, TravelPartyMember,
 )
+from .template import build_trip_from_template
+from .fast_extract import fast_covers_required, fast_extract_params
 
 logger = logging.getLogger("planner-core.generators.itinerary")
 
@@ -221,7 +223,7 @@ class ItineraryGenerator:
             # 阶段一：提取参数（v2：显式参数合并 + 缺参判定 + 代填记录）
             t0 = time.monotonic()
             params, missing, defaulted = self._extract_params(query, preferences, explicit, carry)
-            llm_stats = self.llm.get_last_stats() or {}
+            llm_stats = getattr(self, "_extract_llm_stats", None) or self.llm.get_last_stats() or {}
             self._phase_timings["extract"] = {
                 "duration_ms": int((time.monotonic() - t0) * 1000),
                 "llm": llm_stats,
@@ -238,8 +240,20 @@ class ItineraryGenerator:
             ext = self._enrich_external(params)
             self._current_ext = ext
 
-            # 阶段二：生成行程（chat_json 内含 chat 调用，stats 也已记录）
+            # 阶段二：生成行程
+            # v3 模板直出（商务类场景，0 LLM）：未覆盖再走大模型
             t0 = time.monotonic()
+            template_trip = build_trip_from_template(params, preferences, query)
+            if template_trip is not None:
+                self._sync_template_budget_defaulted(template_trip)
+                template_trip["scene"] = params.get("scene") or "personal"
+                template_trip["purpose"] = params.get("purpose") or ""
+                self._phase_timings["generate"] = {
+                    "duration_ms": int((time.monotonic() - t0) * 1000),
+                    "llm": {"mode": "template", "skipped": True},
+                }
+                return self._attach_external(template_trip, ext)
+
             trip_dict = self._generate_trip(params, query, preferences, ext)
             llm_stats = self.llm.get_last_stats() or {}
             self._phase_timings["generate"] = {
@@ -299,10 +313,10 @@ class ItineraryGenerator:
             return
 
         try:
-            # 阶段一：提取参数 (v2 + 埋点)
+            # 阶段一：提取参数 (v2 + 埋点；v3 规则抽取命中时 0 LLM)
             t0 = time.monotonic()
             params, missing, defaulted = self._extract_params(query, preferences, explicit, carry)
-            llm_stats = self.llm.get_last_stats() or {}
+            llm_stats = getattr(self, "_extract_llm_stats", None) or self.llm.get_last_stats() or {}
             self._phase_timings["extract"] = {
                 "duration_ms": int((time.monotonic() - t0) * 1000),
                 "llm": llm_stats,
@@ -317,6 +331,36 @@ class ItineraryGenerator:
             # 阶段一·五：外部数据 enrichment（腾讯地图/和风），失败不阻断
             ext = self._enrich_external(params)
             self._current_ext = ext
+
+            # 阶段二：行程生成
+            # v3 模板直出：商务类场景行程结构固定（去程→入住→拜访/会议→返程），
+            # 骨架由代码确定性拼装（0 LLM 调用，毫秒级），大模型只负责阶段一抽参。
+            # 生成耗时从 ~17s 降到 ~2s（仅剩抽参）。personal 或模板未覆盖（返回
+            # None）→ 回退大模型流式生成。
+            t0 = time.monotonic()
+            template_trip = build_trip_from_template(params, preferences, query)
+            if template_trip is not None:
+                self._sync_template_budget_defaulted(template_trip)
+                self._phase_timings["generate"] = {
+                    "duration_ms": int((time.monotonic() - t0) * 1000),
+                    "llm": {"mode": "template", "skipped": True},
+                }
+                text = json.dumps(template_trip, ensure_ascii=False, indent=2)
+                for i in range(0, len(text), 80):
+                    yield text[i:i + 80]
+                t_parse = time.monotonic()
+                template_trip["scene"] = params.get("scene") or "personal"
+                template_trip["purpose"] = params.get("purpose") or ""
+                template_trip = self._attach_external(template_trip, ext)
+                self._phase_timings["parse"] = {
+                    "duration_ms": int((time.monotonic() - t_parse) * 1000),
+                    "text_len": len(text),
+                }
+                self._last_trip = template_trip
+                self._phase_timings["total"] = {
+                    "duration_ms": int((time.monotonic() - gen_started_at) * 1000),
+                }
+                return
 
             # 阶段二：流式生成 (埋点 first_chunk_ms / 总耗时)
             t0 = time.monotonic()
@@ -356,6 +400,23 @@ class ItineraryGenerator:
                 self._demo_generate(query, preferences), self._empty_ext()
             )
             self._phase_timings["error"] = {"message": str(e)}
+
+    def _sync_template_budget_defaulted(self, template_trip: dict) -> None:
+        """模板直出估算了预算时，同步代填记录口径（确认页展示「按模板估算」）。
+
+        用户明确给了预算时 trip.budget_estimated 为 False，代填记录不动。
+        """
+        if not template_trip.get("budget_estimated"):
+            return
+        est = template_trip.get("budget_total") or 0
+        self.last_defaulted = [
+            d if d.get("field") != "budget_total" else {
+                "field": "budget_total",
+                "value": est,
+                "note": "未提及预算，按模板标准估算（往返大交通+住宿+餐饮+市内交通），确认页可调整",
+            }
+            for d in self.last_defaulted
+        ]
 
     # ------------------------------------------------------------------
     # Prompt 构建
@@ -630,9 +691,20 @@ class ItineraryGenerator:
         carry = {k: v for k, v in (carry or {}).items() if v not in (None, "", [])}
 
         raw = {}
-        if self.llm.is_available():
-            messages = self._build_extraction_prompt(query, preferences, explicit)
-            raw = self.llm.chat_json(messages, temperature=0.1, max_tokens=1024, model=self.model) or {}
+        llm_stats = {}
+        if explicit and all(explicit.get(k) for k in REQUIRED_PARAMS):
+            # 显式参数已覆盖全部必填（确认页改参重生成等）→ 无需任何抽取调用
+            llm_stats = {"mode": "explicit", "skipped": True}
+        elif self.llm.is_available():
+            # v3 两级抽取：常见差旅句式走规则直取（0 LLM，毫秒级）；
+            # 命中不全才回退大模型（复杂句式/相对日期仍可靠）。不混拼两套口径。
+            fast = fast_extract_params(query)
+            if fast_covers_required(fast):
+                raw = fast
+                llm_stats = {"mode": "fast_regex", "skipped": True}
+            else:
+                messages = self._build_extraction_prompt(query, preferences, explicit)
+                raw = self.llm.chat_json(messages, temperature=0.1, max_tokens=1024, model=self.model) or {}
 
         def pick(field):
             """字段取值：显式参数 > LLM 提取 > 澄清轮次续用；空/null 视为未提供。"""
@@ -710,6 +782,8 @@ class ItineraryGenerator:
             params["transport"] = "airplane"
             defaulted.append({"field": "transport", "value": "airplane", "note": "默认飞机，确认页可更换"})
 
+        # 抽取阶段 LLM 状态（fast_regex / explicit 时为 skipped，调用方埋点用）
+        self._extract_llm_stats = llm_stats
         return params, missing, defaulted
 
     @staticmethod
