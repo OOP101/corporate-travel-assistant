@@ -10,6 +10,7 @@
  *  - 首次进入且无本地快照时，回放 journey-hub 服务端会话历史兜底。
  */
 import { chatStream, clearSession, getSessionHistory, confirmTripPlan } from '../api/journey';
+import { subscribeMonitor } from '../api/sense';
 import { currentUserId } from '../api/auth';
 
 // 会话 ID 即登录用户名 —— 与 planner 侧 resolve_user_id 同一口径，
@@ -182,6 +183,23 @@ function onStreamEvent(evt) {
       cards: evt.trip_id ? [{ type: 'trip', id: evt.trip_id }] : m.cards,
       savedTripId: evt.trip_id || null,
     }));
+
+    // 自动订阅出行监控（天气 + 路况 + 景点）—— 失败只记日志不阻断对话
+    if (evt.trip_id && evt.destination) {
+      const monitorPayload = {
+        trip_id: evt.trip_id,
+        user_id: currentUserId(),
+        origin: evt.origin || '',
+        destination: evt.destination || '',
+        attractions: Array.isArray(evt.attractions) ? evt.attractions : [],
+        check_weather: true,
+        check_traffic: !!(evt.origin && evt.destination),
+        check_attractions: Array.isArray(evt.attractions) && evt.attractions.length > 0,
+      };
+      subscribeMonitor(monitorPayload).catch((err) => {
+        console.warn('[chatStore] 自动订阅监控失败:', err);
+      });
+    }
   } else if (evt.event === 'chunk') {
     patchLast((m) => ({ ...m, content: (m.content || '') + evt.content, progress: '' }));
   } else if (evt.event === 'respond') {

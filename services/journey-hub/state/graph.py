@@ -268,7 +268,9 @@ class JourneyHubGraph:
             {"event": "chunk",  "content": <文本片段>}   （chat 逐 token / plan 逐段摘要）
             {"event": "clarify", "missing": [...], "params": {...}} （S2 澄清反问，前端渲染选项）
             {"event": "confirm", "trip": {...}, "defaulted": [...]} （S4 方案确认卡，草案未落库）
-            {"event": "trip_saved", "trip_id": ..., "trip": {...}}  （S5 确认完成，已落库）
+            {"event": "trip_saved", "trip_id": ..., "trip": {...},
+             "origin"/"destination"/"start_date"/"end_date",
+             "attractions": [...], "weather": [...], "transport": {...}}  （S5 确认完成，已落库）
             {"event": "respond", "content": <完整回复>}  （兼容前端整体替换契约）
         """
         # v2 阶段路由：clarify 阶段的用户输入是澄清答案，直通规划；
@@ -423,10 +425,12 @@ class JourneyHubGraph:
             yield {"event": "chunk", "content": full}
         else:
             full = result.get("message", "")
+            saved_trip = result.get("trip") or {}
             yield {
                 "event": "trip_saved",
                 "trip_id": result.get("trip_id"),
-                "trip": result.get("trip") or {},
+                "trip": saved_trip,
+                **self._extract_trip_summary(saved_trip),
             }
             for piece in self._split_text(full, 60):
                 yield {"event": "chunk", "content": piece}
@@ -442,6 +446,38 @@ class JourneyHubGraph:
             text = text[width:]
         if text:
             yield text
+
+    @staticmethod
+    def _extract_trip_summary(trip: dict) -> dict:
+        """从已落库行程中提取订阅监控与展示所需的紧凑字段。"""
+        days = trip.get("days") or []
+        attractions = []
+        for day in days:
+            for act in day.get("activities") or []:
+                if act.get("type") == "attraction" and act.get("title"):
+                    attractions.append(act["title"])
+        # 去重同时保持顺序
+        seen = set()
+        unique_attractions = []
+        for name in attractions:
+            if name not in seen:
+                seen.add(name)
+                unique_attractions.append(name)
+
+        route = trip.get("route") or {}
+        weather = trip.get("weather_forecast") or []
+        return {
+            "origin": trip.get("origin", ""),
+            "destination": trip.get("destination", ""),
+            "start_date": trip.get("start_date", ""),
+            "end_date": trip.get("end_date", ""),
+            "attractions": unique_attractions,
+            "weather": weather[:3] if isinstance(weather, list) else [],
+            "transport": {
+                "distance_km": route.get("distance_km") if isinstance(route, dict) else None,
+                "duration_min": route.get("duration_min") if isinstance(route, dict) else None,
+            } if isinstance(route, dict) else None,
+        }
 
     # ------------------------------------------------------------------
     # 同步调用入口
