@@ -93,23 +93,21 @@ async def lifespan(app: FastAPI):
         model=settings.llm_model,
         temperature=0.3,
     )
-    # 多模型：腾讯 TokenHub 统一网关（混元 / DeepSeek / 智谱）
+    # 多模型：腾讯 TokenHub 统一网关（2026-09-17 全量切换：DeepSeek / Kimi / 混元三系）
+    # 其余已开通未注册路由（记录备查）：glm-5 系 / minimax-m2.7 / mimo-v2.5-pro /
+    # deepseek-v4-pro-0813 / deepseek-v4-pro-202606 / kimi-k2.7-code / hunyuan-role-latest
+    # 注意：kimi-k2.6 为思考模式仅允许 temperature=1，未注册默认路由
     if settings.tencent_maas_api_key and settings.tencent_maas_base_url:
         llm.register(
             "tencent_maas",
             api_key=settings.tencent_maas_api_key,
             base_url=settings.tencent_maas_base_url,
-            model="hy-mt2-pro",
+            model="deepseek-v4-flash",
             temperature=0.3,
         )
-        for _m in ("hy-mt2-pro", "deepseek-v4-flash", "glm-5-turbo"):
+        for _m in ("deepseek-v4-flash", "kimi-k3", "hy-mt2-pro", "hy-mt2-lite"):
             llm.register_model_route(_m, "tencent_maas")
-        logger.info("已接入腾讯 TokenHub 多模型网关（hy-mt2-pro / deepseek-v4-flash / glm-5-turbo）")
-
-    # 默认 provider（.env LLM_*）同样按模型名路由，避免未命中时张冠李戴
-    if settings.llm_base_url:
-        for _m in ("mimo-v2.5", "mimo-v2.5-pro"):
-            llm.register_model_route(_m, "openai_compatible")
+        logger.info("已接入腾讯 TokenHub 多模型网关（deepseek-v4-flash / kimi-k3 / hy-mt2-pro / hy-mt2-lite）")
 
     # 用户与系统配置存储（登录 / 管理员界面）
     system_dir = os.path.join(os.path.dirname(settings.trip_data_dir), "system")

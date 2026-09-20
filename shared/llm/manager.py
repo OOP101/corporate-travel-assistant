@@ -25,6 +25,13 @@ class LLMError(RuntimeError):
     """LLM 调用失败（网络异常 / HTTP 错误 / 输出无法解析为 JSON）"""
 
 
+# TokenHub 思考模式模型：网关仅允许 temperature=1，传其他值直接 400
+# （invalid temperature: only 1 is allowed for this model）。
+# 实测记录 2026-09-17：kimi-k2.6 / kimi-k3 均有此约束；调用侧无需感知，
+# manager 按模型名自动强制 temperature=1。
+_THINKING_MODELS_TEMP_ONE = frozenset({"kimi-k2.6", "kimi-k3"})
+
+
 class LLMManager:
     """多服务商 LLM 注册表 (shared 模块 —— 全平台复用)"""
 
@@ -95,10 +102,13 @@ class LLMManager:
         cfg = self._get_config(provider, model)
         url = f"{cfg['base_url']}/chat/completions"
 
+        temperature = temperature if temperature is not None else cfg["temperature"]
+        if (model or cfg["model"]) in _THINKING_MODELS_TEMP_ONE:
+            temperature = 1
         payload = {
             "model": model or cfg["model"],
             "messages": messages,
-            "temperature": temperature if temperature is not None else cfg["temperature"],
+            "temperature": temperature,
             "max_tokens": max_tokens or cfg["max_tokens"],
             "stream": False,
         }
@@ -208,10 +218,13 @@ class LLMManager:
         cfg = self._get_config(provider, model)
         url = f"{cfg['base_url']}/chat/completions"
 
+        temperature = temperature if temperature is not None else cfg["temperature"]
+        if (model or cfg["model"]) in _THINKING_MODELS_TEMP_ONE:
+            temperature = 1
         payload = {
             "model": model or cfg["model"],
             "messages": messages,
-            "temperature": temperature if temperature is not None else cfg["temperature"],
+            "temperature": temperature,
             "max_tokens": max_tokens or cfg["max_tokens"],
             "stream": True,
         }
