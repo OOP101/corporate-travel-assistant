@@ -50,4 +50,4 @@ python launcher.py status     # 查看服务状态
 pytest --basetemp=./.pytest_tmp -q
 ```
 
-**201 passed / 0 failed**（13 个测试文件，2026-09-18 实测 46.3s）。
+**203 passed / 0 failed**（13 个测试文件，2026-09-20 实测 8.6s）。

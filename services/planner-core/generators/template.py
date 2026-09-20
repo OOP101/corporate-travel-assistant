@@ -21,6 +21,9 @@
 铁律：
   - 不编造航班号/车次/酒店名——交通话术用「按实际出票信息核对」，住宿只写
     「酒店入住办理」，具体品牌交给确认页与酒店候选（hotel_options）。
+  - 大交通/住宿明细金额按固定估算口径分摊写入（tips 注明以实际出票/入住为准），
+    保证明细条目费用加总与 budget_total 精确一致（2026-09-20 用户反馈：明细
+    缺金额、行程缺住宿条目，观感"流程不对"）。
 """
 import re
 from datetime import datetime, timedelta
@@ -35,12 +38,10 @@ _SCENE_TITLE = {
     "team": "团队出行",
 }
 
-# 往返大交通估算（元/人，往返合计；未接实时票价接口前的固定口径）
+# 往返大交通估算（元/人，往返合计；未接实时票价接口前的固定口径，明细按半程分摊）
 _ROUNDTRIP_EST = {"airplane": 1600, "train": 1100, "drive": 1000}
-# 住宿（元/人/晚）、餐饮（元/人/天）、市内交通（元/人/天）
+# 住宿（元/人/晚）；餐饮与市内交通按骨架实际条目口径在预算公式中计算
 _HOTEL_PER_NIGHT = 450
-_MEAL_PER_DAY = 150
-_LOCAL_PER_DAY = 100
 
 _MODE_NAME = {"airplane": "乘机", "train": "乘高铁", "drive": "自驾"}
 _MODE_HUB = {"airplane": "机场", "train": "高铁站", "drive": ""}
@@ -174,8 +175,9 @@ def build_trip_from_template(params: dict, preferences: dict = None,
                          f"前往{_MODE_HUB[mode]}" + (f"（{origin}）" if origin else ""),
                          hub, cost=50, tips="预留值机/安检缓冲"))
         acts.append(_act(_fmt(dep + 90), _fmt(dep + 270), "transport",
-                         transport_title(origin, dest), dest, cost=0,
-                         tips="按实际出票信息核对航班/车次；如需调整出发时段，在确认页说明后重新生成"))
+                         transport_title(origin, dest), dest,
+                         cost=_ROUNDTRIP_EST[mode] // 2,
+                         tips="按实际出票信息核对航班/车次；金额为往返估价的一半，如需调整出发时段，在确认页说明后重新生成"))
 
     def return_day(acts: list):
         """末日返程：退房 → 收尾沟通 → 午餐 → 枢纽 → 城际 → 抵达。
@@ -194,8 +196,8 @@ def build_trip_from_template(params: dict, preferences: dict = None,
             acts.append(_act("11:00", "14:00", "transport",
                              transport_title(dest, origin) if origin
                              else f"{_MODE_NAME[mode]} 返回出发地",
-                             origin or "出发地", cost=0,
-                             tips="按实际出票信息核对航班/车次"))
+                             origin or "出发地", cost=_ROUNDTRIP_EST[mode] // 2,
+                             tips="按实际出票信息核对航班/车次；金额为往返估价的一半"))
             acts.append(_act("14:30", "15:00", "other",
                              f"抵达{origin or '出发地'}，行程结束", origin or "出发地"))
         else:
@@ -212,8 +214,8 @@ def build_trip_from_template(params: dict, preferences: dict = None,
             acts.append(_act("14:00", "17:00", "transport",
                              transport_title(dest, origin) if origin
                              else f"{_MODE_NAME[mode]} 返回出发地",
-                             origin or "出发地", cost=0,
-                             tips="按实际出票信息核对航班/车次"))
+                             origin or "出发地", cost=_ROUNDTRIP_EST[mode] // 2,
+                             tips="按实际出票信息核对航班/车次；金额为往返估价的一半"))
             acts.append(_act("17:30", "18:00", "other",
                              f"抵达{origin or '出发地'}，行程结束", origin or "出发地"))
 
@@ -244,8 +246,8 @@ def build_trip_from_template(params: dict, preferences: dict = None,
         acts.append(_act(_fmt(arrival + 390), _fmt(arrival + 570), "transport",
                          transport_title(dest, origin) if origin
                          else f"{_MODE_NAME[mode]} 返回出发地",
-                         origin or "出发地", cost=0,
-                         tips="按实际出票信息核对航班/车次"))
+                         origin or "出发地", cost=_ROUNDTRIP_EST[mode] // 2,
+                         tips="按实际出票信息核对航班/车次；金额为往返估价的一半"))
         acts.append(_act(_fmt(arrival + 600), _fmt(arrival + 630), "other",
                          f"抵达{origin or '出发地'}，行程结束", origin or "出发地"))
         trip_days.append({"date": all_dates[0],
@@ -254,9 +256,9 @@ def build_trip_from_template(params: dict, preferences: dict = None,
         # ---- 首日：去程 + 按抵达时刻分流晚间 ----
         d1 = []
         leg_out(d1)
-        d1.append(_act(_fmt(arrival), _fmt(arrival + 45), "transport",
-                       "前往酒店办理入住", dest,
-                       tips="住宿建议选客户/会场附近，候选见酒店选项"))
+        d1.append(_act(_fmt(arrival), _fmt(arrival + 45), "accommodation",
+                       "酒店入住办理", dest, cost=_HOTEL_PER_NIGHT,
+                       tips="住宿建议选客户/会场附近，候选见酒店选项；金额按 450/晚 估算，以实际入住为准"))
         if arrival + 45 <= _minute(16):
             # 抵达早：下午留给休整（≥3 天）或首场商务（2 天）
             if days == 2:
@@ -284,6 +286,9 @@ def build_trip_from_template(params: dict, preferences: dict = None,
             biz_block(dm, "下午", _minute(14), _minute(17, 30))
             dine(dm, _minute(18), "晚餐", 80)
             dm.append(_act("20:00", "21:00", "rest", "晚间复盘 · 整理当日纪要", dest))
+            dm.append(_act("21:00", "21:30", "accommodation", "返回酒店休息", dest,
+                           cost=_HOTEL_PER_NIGHT,
+                           tips="金额按 450/晚 估算，以实际入住为准"))
             trip_days.append({
                 "date": all_dates[i],
                 "theme": biz_title if purpose else f"{dest}{_SCENE_TITLE[scene]}",
@@ -306,9 +311,10 @@ def build_trip_from_template(params: dict, preferences: dict = None,
         children = int(params.get("num_children") or 0)
         elders = int(params.get("num_elders") or 0)
         party = max(1, adults + children + elders)
-        nights = max(0, days - 1)
-        per_person = (_ROUNDTRIP_EST.get(mode, 1200) + nights * _HOTEL_PER_NIGHT
-                      + days * _MEAL_PER_DAY + days * _LOCAL_PER_DAY)
+        # 预算 = 明细条目金额（人均）× 人数，与前端条目费用加总精确一致
+        # （2026-09-20 用户反馈：此前公式口径与明细脱节，条目缺金额观感"流程不对"）
+        per_person = sum(a.get("estimated_cost", 0)
+                         for d in trip_days for a in d["activities"])
         budget = round(per_person * party)
 
     title = f"{start.year}年{start.month}月{dest}{biz_title}之行"

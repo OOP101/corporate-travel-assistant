@@ -139,8 +139,9 @@ def test_time_preference_shifts(template_mod):
 def test_budget_estimated_when_missing(template_mod):
     build, _ = template_mod
     trip = build(dict(BASE_PARAMS), {}, USER_QUERY)
-    # 1600(往返) + 2*450(住宿) + 3*150(餐饮) + 3*100(市内) = 3250
-    assert trip["budget_total"] == 3250
+    # 明细加总(人均)：首日 50+800+450(住宿)+100=1400；中间天 30+60+80+450=620；
+    # 末日 60+50+800=910 → 2930（大交通按往返估价一半分摊进明细）
+    assert trip["budget_total"] == 2930
     assert trip["budget_estimated"] is True
 
 
@@ -153,9 +154,40 @@ def test_budget_respected_when_given(template_mod):
 
 def test_budget_scales_with_party_and_mode(template_mod):
     build, _ = template_mod
-    # 2 人高铁：1100 + 900 + 450 + 300 = 2750/人 × 2
+    # 2 人高铁：明细人均 50+550+450+100=1150 / 620 / 660 → 2430 × 2
     trip = build({**BASE_PARAMS, "transport": "train", "num_adults": 2}, {}, USER_QUERY)
-    assert trip["budget_total"] == 5500
+    assert trip["budget_total"] == 4860
+
+
+def test_budget_equals_itemized_sum_all_shapes(template_mod):
+    """2026-09-20 用户反馈回归：预算必须与明细条目加总精确一致（人均×人数）。"""
+    build, _ = template_mod
+    cases = [
+        (dict(BASE_PARAMS), USER_QUERY),
+        ({**BASE_PARAMS, "days": 2, "end_date": "2026-09-16"}, "9月15号广州飞北京出差，16号返程"),
+        ({**BASE_PARAMS, "days": 1, "end_date": "2026-09-15"}, "9月15号广州飞北京出差当天往返"),
+        ({**BASE_PARAMS, "transport": "train", "num_adults": 2}, "9月15号高铁去北京出差3天，2人"),
+    ]
+    for params, query in cases:
+        trip = build(params, {}, query)
+        party = max(1, len(trip["travel_party"]))
+        itemized = sum(a.get("estimated_cost", 0)
+                       for d in trip["days"] for a in d["activities"])
+        assert trip["budget_total"] == itemized * party, (
+            f"{params.get('days')}天/{params.get('transport')}: "
+            f"预算 {trip['budget_total']} ≠ 明细加总 {itemized}×{party}"
+        )
+
+
+def test_hotel_nights_match_trip_length(template_mod):
+    """2026-09-20 用户反馈回归：多日行程每晚都有带金额的住宿条目。"""
+    build, _ = template_mod
+    for days, end in [(2, "2026-09-16"), (3, "2026-09-17"), (5, "2026-09-19")]:
+        trip = build({**BASE_PARAMS, "days": days, "end_date": end}, {}, USER_QUERY)
+        # 末日的「酒店退房」也是 accommodation 但 0 元，付费住宿晚数应为 days-1
+        stays = [a for d in trip["days"] for a in d["activities"]
+                 if a["type"] == "accommodation" and a["estimated_cost"] > 0]
+        assert len(stays) == days - 1, f"{days} 天行程应有 {days - 1} 晚住宿条目"
 
 
 # ---------------------------------------------------------------------------
