@@ -17,6 +17,7 @@ from typing import Dict, Any, Optional
 
 from .registry import ToolResult
 from .emergency import EmergencyAssistant
+from .mcp_map import TencentMapMCP
 from shared.http_client import ServiceClient
 
 logger = logging.getLogger("journey-hub.tools")
@@ -56,6 +57,8 @@ class ToolHandlers:
         self.sense_url = sense_url.rstrip("/")
         self.client = ServiceClient(timeout=30)
         self.emergency = EmergencyAssistant(llm_manager)
+        # 腾讯地图 MCP（未配置 Key / SDK 缺失 → None，功能静默关闭）
+        self.mcp_map = TencentMapMCP.from_env()
 
     # ------------------------------------------------------------------
     # 行程规划
@@ -501,6 +504,20 @@ class ToolHandlers:
             f"起飞 {d.get('scheduled_departure', '')}{tag}"
         )
 
+    def _map_mcp_context(self, query: str) -> str:
+        """腾讯地图 MCP 实查上下文：地图类问题命中规则才调用，失败静默回退。"""
+        if self.mcp_map is None or not self.mcp_map.is_available():
+            return ""
+        try:
+            res = self.mcp_map.query(query)
+        except Exception as e:
+            logger.warning(f"地图 MCP 上下文构建失败: {e}")
+            return ""
+        if not res or not res.get("text"):
+            return ""
+        return (f"【地图实时数据 · 腾讯位置服务 MCP】（工具 {res.get('tool')} 实查，"
+                f"回答以下问题时引用这些事实，并提醒以实际为准）：\n{res['text'][:1500]}")
+
     def chat_query(
         self,
         query: str,
@@ -539,6 +556,11 @@ class ToolHandlers:
             realtime_context = self._realtime_context(query)
             if realtime_context:
                 messages.append({"role": "system", "content": realtime_context})
+
+            # 注入地图实时数据（腾讯位置服务 MCP，地图类问题命中才拉取）
+            map_context = self._map_mcp_context(query)
+            if map_context:
+                messages.append({"role": "system", "content": map_context})
 
             messages.append({"role": "user", "content": query})
 

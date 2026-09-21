@@ -26,7 +26,7 @@
 | LLM | 腾讯 TokenHub `deepseek-v4-flash`（主）/ kimi-k3 / hy-mt2-pro |
 | 向量检索 | 可插拔：本地 bge-large-zh-v1.5 / OpenAI 兼容 / 关键词降级 |
 | 前端 | React 19 + Vite 8 + Tailwind CSS 4 |
-| 外部数据 | 腾讯位置服务（SN 签名）+ 和风天气 + 12306 |
+| 外部数据 | 腾讯位置服务（SN 签名 + MCP 客户端接入）+ 和风天气 + 12306 |
 | 可观测性 | Prometheus + 结构化日志 + 全链路 Trace |
 
 ## 快速开始
@@ -50,4 +50,4 @@ python launcher.py status     # 查看服务状态
 pytest --basetemp=./.pytest_tmp -q
 ```
 
-**203 passed / 0 failed**（13 个测试文件，2026-09-20 实测 8.6s）。
+**219 passed / 0 failed**（14 个测试文件，2026-09-21 实测 50.7s）。

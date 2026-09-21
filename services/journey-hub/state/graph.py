@@ -319,6 +319,11 @@ class JourneyHubGraph:
                 policy_ctx = chat_handler._policy_context(user_input)
                 if policy_ctx:
                     messages.append({"role": "system", "content": policy_ctx})
+            # 地图类问题注入腾讯地图 MCP 实查依据（与 chat_query 一致，失败静默）
+            if chat_handler is not None and hasattr(chat_handler, "_map_mcp_context"):
+                map_ctx = chat_handler._map_mcp_context(user_input)
+                if map_ctx:
+                    messages.append({"role": "system", "content": map_ctx})
             messages.append({"role": "user", "content": user_input})
 
             full = ""
