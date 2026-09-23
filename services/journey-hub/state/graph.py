@@ -37,6 +37,35 @@ logger = logging.getLogger("journey-hub")
 
 AgentState = Dict[str, Any]
 
+# 同一行程最多澄清轮数（PRD §6.3：最多 2 轮反问，第 3 轮仍未补齐 → 引导手动创建）。
+# 此前 clarify_count 只被塞进 clarify 帧当 round 展示、从不拦截，于是
+# 「缺参 → 点『你看着办，按常见差旅默认补全』→ 还是缺参 → 再问一遍」形成死循环。
+MAX_CLARIFY_ROUNDS = 2
+
+# 澄清缺参 → 中文名（澄清上限提示用）
+_CLARIFY_LABELS = {
+    "scene": "出行场景",
+    "destination": "目的地",
+    "start_date": "出发日期",
+    "days": "天数",
+}
+
+
+def _build_clarify_exhausted(missing: list, params: dict) -> str:
+    """澄清轮次用尽话术（PRD §6.3）：告知还缺哪几项 + 引导手动创建。
+
+    目的地没有可用的代填规则，所以缺它时必须终止追问而不是继续反问——
+    否则用户每点一次授权入口都会原样重问一遍。
+    """
+    labels = [_CLARIFY_LABELS.get(m, m) for m in (missing or [])] or ["关键信息"]
+    dest = (params or {}).get("destination") or ""
+    return (
+        f"我已经问了两轮，{'去' + dest + '的' if dest else '这趟'}行程还差"
+        f"「{'、'.join(labels)}」没确定，这部分我不能凭空替你编。\n"
+        "可以直接回我一句（例如「下周一去深圳出差 3 天」），"
+        "也可以到「差旅行程」页手动填写后生成。"
+    )
+
 
 class JourneyHubGraph:
     """
@@ -345,6 +374,8 @@ class JourneyHubGraph:
         # plan 意图 → 流式透传规划进度、草案摘要与澄清/确认结构化帧
         if intent == Intent.PLAN:
             handler = self.tools.get_handler("plan_trip_stream") or self.tools.get_handler("plan_trip")
+            # 本轮之前的澄清轮次计数，用于执行 PRD §6.3 的「同一行程最多 2 轮」上限
+            clarify_rounds = self.sessions.get_metadata(session_id, "clarify_count", 0) or 0
             full = ""
             if handler is not None:
                 try:
@@ -364,21 +395,34 @@ class JourneyHubGraph:
                         if kind == "progress":
                             yield {"event": "progress", "content": frame.get("content", "")}
                         elif kind == "clarify":
-                            # S2 澄清：记录阶段与已抽参数（下轮 carry 续用），前端据此渲染可点选项
-                            self.sessions.set_metadata(session_id, "plan_stage", "clarify")
-                            self.sessions.set_metadata(session_id, "plan_carry", frame.get("params") or {})
-                            count = self.sessions.get_metadata(session_id, "clarify_count", 0) or 0
-                            self.sessions.set_metadata(session_id, "clarify_count", count + 1)
-                            content = frame.get("content", "")
-                            full += content
-                            yield {
-                                "event": "clarify",
-                                "content": content,
-                                "missing": frame.get("missing", []),
-                                "params": frame.get("params", {}),
-                                "round": count + 1,
-                            }
-                            yield {"event": "chunk", "content": content}
+                            missing = frame.get("missing") or []
+                            params_now = frame.get("params") or {}
+                            new_round = clarify_rounds + 1
+                            if new_round > MAX_CLARIFY_ROUNDS:
+                                # PRD §6.3 上限：不再反问，改告知缺项 + 引导手动创建。
+                                # 阶段与计数都保持不动：后续同类输入稳定复现这句终止提示，
+                                # 不会退回「问一遍」——那正是用户点了 5 次的原死循环。
+                                # carry 仍要更新：授权代填补上的日期/天数得记住，
+                                # 用户补上目的地后即可直接出草案（不必重头再问一遍）。
+                                self.sessions.set_metadata(session_id, "plan_carry", params_now)
+                                terminal = _build_clarify_exhausted(missing, params_now)
+                                full += terminal
+                                yield {"event": "chunk", "content": terminal}
+                            else:
+                                # S2 澄清：记录阶段与已抽参数（下轮 carry 续用），前端渲染可点选项
+                                self.sessions.set_metadata(session_id, "plan_stage", "clarify")
+                                self.sessions.set_metadata(session_id, "plan_carry", params_now)
+                                self.sessions.set_metadata(session_id, "clarify_count", new_round)
+                                content = frame.get("content", "")
+                                full += content
+                                yield {
+                                    "event": "clarify",
+                                    "content": content,
+                                    "missing": missing,
+                                    "params": params_now,
+                                    "round": new_round,
+                                }
+                                yield {"event": "chunk", "content": content}
                         elif kind == "draft":
                             # S3 草案：挂起待确认（未落库未审批），进入 confirm 阶段，carry 用毕清除
                             trip = frame.get("trip") or {}

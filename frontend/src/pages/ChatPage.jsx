@@ -3,10 +3,12 @@ import { useNavigate } from 'react-router-dom';
 import {
   Send, Bot, User, Sparkles, Plane, CalendarCheck, Map,
   FileText, ClipboardCheck, ChevronRight, MessageCircle, Loader2, RefreshCw, SquarePen,
+  History,
 } from 'lucide-react';
-import { listModels } from '../api/auth';
+import { listModels, currentUserId } from '../api/auth';
+import { listSessions } from '../api/journey';
 import { chatStore, GREETING } from '../store/chatStore';
-import { Badge, TripConfirmCard } from '../components';
+import { Badge, TripConfirmCard, Drawer, Button, EmptyState } from '../components';
 
 const INTENT_LABELS = {
   plan: { label: '行程规划', tone: 'primary' },
@@ -25,10 +27,12 @@ const SUGGESTIONS = [
   { icon: Map, text: '安排我到成都分公司做例行巡检，周二晚上团队聚餐' },
 ];
 
+// 兜底模型列表：接口失败时用。注意 Hy-MT2 全系仅 8k 上下文且超限静默截断，
+// 不适合做默认模型，故把上下文更长的放在前面。
 const FALLBACK_MODELS = [
-  { value: 'hy-mt2-pro', label: '混元 Pro' },
   { value: 'deepseek-v4-flash', label: 'DeepSeek V4' },
-  { value: 'glm-5-turbo', label: 'GLM Turbo' },
+  { value: 'kimi-k3', label: 'Kimi K3' },
+  { value: 'hy-mt2-pro', label: '混元 Pro' },
 ];
 
 function ActionCard({ type, card, onOpen }) {
@@ -57,10 +61,26 @@ export default function ChatPage() {
   const [, setTick] = useState(0);
   const [hydrated, setHydrated] = useState(false);
   const [input, setInput] = useState('');
-  const [model, setModel] = useState('hy-mt2-pro');
+  const [model, setModel] = useState('deepseek-v4-flash');
   const [modelOptions, setModelOptions] = useState(FALLBACK_MODELS);
+  const [sessionsOpen, setSessionsOpen] = useState(false);
+  const [sessions, setSessions] = useState([]);
+  const [sessionsLoading, setSessionsLoading] = useState(false);
   const scrollRef = useRef(null);
   const inputRef = useRef(null);
+
+  // 服务端活跃会话概览（诊断用）：确认当前登录身份的会话是否真的落到了后端
+  const openSessions = async () => {
+    setSessionsOpen(true);
+    setSessionsLoading(true);
+    try {
+      const res = await listSessions();
+      setSessions(res.sessions || []);
+    } catch {
+      setSessions([]);
+    }
+    setSessionsLoading(false);
+  };
 
   const store = chatStore.get();
   const messages = store.messages || [GREETING];
@@ -133,7 +153,14 @@ export default function ChatPage() {
       {/* 顶部：非空对话时提供「新对话」入口 */}
       {hydrated && !isEmptyChat && (
         <div className="shrink-0 px-6 pt-3">
-          <div className="max-w-3xl mx-auto flex justify-end">
+          <div className="max-w-3xl mx-auto flex justify-end gap-2">
+            <button
+              onClick={openSessions}
+              title="查看服务端会话状态"
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-white border border-gray-200 text-ink-600 hover:border-primary-300 hover:text-primary-600 transition-colors shadow-sm"
+            >
+              <History size={13} /> 会话
+            </button>
             <button
               onClick={handleNewChat}
               disabled={loading}
@@ -378,6 +405,61 @@ export default function ChatPage() {
         </div>
         <p className="text-center text-[11px] text-ink-400 mt-2">Enter 发送 · Shift+Enter 换行 · 回答下方可点击卡片与追问 · 切换菜单对话不丢失 · 右上角「新对话」重新开始</p>
       </div>
+
+      <Drawer
+        open={sessionsOpen}
+        title="会话状态"
+        subtitle="服务端内存中的活跃会话，用于确认身份与会话是否真的落到后端"
+        onClose={() => setSessionsOpen(false)}
+      >
+        <div className="space-y-4">
+          <div className="rounded-xl border border-primary-100 bg-primary-50/60 px-4 py-3 text-[12px] text-ink-600 leading-relaxed">
+            当前身份：<span className="font-medium text-ink-900">{currentUserId() || '未登录'}</span>。
+            会话 ID 取自登录用户名，换账号登录会进入不同会话，上下文互不串。
+          </div>
+
+          {sessionsLoading ? (
+            <div className="flex justify-center py-10">
+              <Loader2 className="animate-spin text-ink-400" size={20} />
+            </div>
+          ) : sessions.length === 0 ? (
+            <EmptyState
+              icon={<History size={20} />}
+              title="暂无活跃会话"
+              description="后端进程重启后会话为空，发一条消息即可建立"
+            />
+          ) : (
+            <div className="space-y-2">
+              {sessions.map((s) => {
+                const isCurrent = s.session_id === currentUserId();
+                return (
+                  <div
+                    key={s.session_id}
+                    className={`rounded-xl border px-3.5 py-3 ${
+                      isCurrent ? 'border-primary-200 bg-primary-50/50' : 'border-gray-100 bg-gray-50/60'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className="text-[13px] font-medium text-ink-900 font-mono truncate">{s.session_id}</span>
+                      {isCurrent && <Badge tone="primary">当前会话</Badge>}
+                      <span className="ml-auto text-[11px] text-ink-400 tnum shrink-0">{s.message_count} 条消息</span>
+                    </div>
+                    {s.last_message && (
+                      <p className="text-[12px] text-ink-400 truncate">{s.last_message}</p>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          <div className="pt-3 border-t border-gray-100">
+            <Button type="secondary" size="sm" block onClick={openSessions}>
+              <RefreshCw size={13} className="mr-1.5" /> 刷新列表
+            </Button>
+          </div>
+        </div>
+      </Drawer>
     </div>
   );
 }

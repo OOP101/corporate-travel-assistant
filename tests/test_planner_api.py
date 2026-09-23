@@ -19,6 +19,7 @@ for _mod in [m for m in list(sys.modules) if m == "api" or m.startswith("api.")]
     del sys.modules[_mod]
 
 import api.main as planner_main  # noqa: E402
+from api import deps as planner_deps  # noqa: E402
 from shared.config import settings  # noqa: E402
 
 assert "planner-core" in planner_main.__file__.replace("\\", "/").lower(), (
@@ -175,3 +176,60 @@ def test_missing_api_key_rejected(client):
     import requests
     r = client.get("/trips", headers={"X-API-Key": "wrong-key"})
     assert r.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# 澄清链路的 SSE 契约：授权代填必须真的把必填项补上（2026-09-23 死循环回归）
+# ---------------------------------------------------------------------------
+@pytest.fixture()
+def client_llm_stub(tmp_path, monkeypatch):
+    """LLM「可用但 chat_json 返回空」——走真实 SSE 抽参链路，不打网络。
+
+    不能用上面的 client fixture：LLM 不可用时 generate_stream 直接走
+    _demo_generate 演示分支，根本不经过 _extract_params，澄清帧无从产生。
+    """
+    monkeypatch.setattr(settings, "trip_data_dir", str(tmp_path / "trips"))
+    monkeypatch.setattr(settings, "profile_data_dir", str(tmp_path / "profiles"))
+    monkeypatch.setattr(settings, "template_data_dir", str(tmp_path / "templates"))
+    monkeypatch.setattr(settings, "embedding_provider", "none")
+
+    with TestClient(planner_main.app) as c:
+        c.headers.update({"X-API-Key": settings.dev_api_key})
+        llm = planner_deps.llm_manager
+        assert llm is not None, "lifespan 未装配 llm_manager"
+        monkeypatch.setattr(llm, "is_available", lambda: True)
+        monkeypatch.setattr(llm, "chat_json", lambda *a, **k: {})
+        yield c
+
+
+def _clarify_of(client, query, session_id, carry=None, params=None):
+    body = {"query": query, "session_id": session_id}
+    if carry:
+        body["carry"] = carry
+    if params:
+        body["params"] = params
+    r = client.post("/trips/generate", json=body)
+    assert r.status_code == 200
+    events = _parse_sse_events(r.text)
+    return next((e for e in events if e.get("event") == "clarify"), None)
+
+
+def test_authorized_autofill_shrinks_missing_over_sse(client_llm_stub):
+    """用户点「你看着办」后缺参必须变少 —— 之前原样重现 → 同一句反问无限循环。"""
+    # 场景已在上一轮由用户点选 → 走 explicit（等价界面上的场景 chip）
+    first = _clarify_of(
+        client_llm_stub, "个人出游", "loop_sse", params={"scene": "personal"}
+    )
+    assert first is not None, "缺参时应发 clarify 帧"
+    assert set(first["missing"]) == {"destination", "start_date", "days"}
+
+    # 用户点授权入口（带上轮已抽参数，等价 journey-hub 的 carry 续用）
+    second = _clarify_of(
+        client_llm_stub, "你看着办，按常见差旅默认补全", "loop_sse", carry=first["params"]
+    )
+    assert set(second["missing"]) == {"destination"}, (
+        f"授权后日期天数应被代填、缺参只剩目的地；实际 {second['missing']}"
+    )
+    # 代填必须有据可查：日期已落到 params，确认页据此渲染 [代填]
+    assert second["params"]["start_date"], "授权后应代填出发日期"
+    assert second["params"]["days"] == 3, "personal 授权代填默认 3 天"

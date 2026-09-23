@@ -64,7 +64,7 @@ export function ssePost(url, body, onEvent) {
 
   fetch(url, {
     method: 'POST',
-    headers: jsonHeaders,
+    headers: { ...jsonHeaders, ...authHeaders() },
     body: JSON.stringify(body),
     signal: controller.signal,
   }).then(async (res) => {

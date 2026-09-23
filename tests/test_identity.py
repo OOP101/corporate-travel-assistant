@@ -4,7 +4,7 @@
   1. `SignedSession` 无状态签名 token 的往返与各类伪造（换 payload 保签名、
      改签名、错密钥、过期、垃圾串）；
   2. planner-core 的 `resolve_user_id` 取值优先级（登录态 > 显式 session_id >
-     API Key 的 workspace）；
+     API Key 的 workspace），以及「带了 Bearer 但验不过」直接 401 的第三种状态；
   3. 多用户数据隔离 —— 两个用户各自的画像与行程不互相可见。
 """
 import os
@@ -105,14 +105,20 @@ def test_without_bearer_falls_back_to_workspace(client):
     assert client.get("/users/me/profile").json()["user_id"] == "default"
 
 
-def test_invalid_bearer_falls_back_to_workspace(client):
+def test_invalid_bearer_is_rejected(client):
+    """带了 Bearer 却验不过 —— 必须拒绝，不能落 workspace 桶。
+
+    落桶会把「登录态失效」伪装成「查无数据」：/trips 按归属过滤会返回
+    200 + 空数组，前端渲染成「还没有行程」，用户查不到任何原因。
+    """
     r = client.get("/users/me/profile", headers={"Authorization": "Bearer not-a-real-token"})
-    assert r.json()["user_id"] == "default"
+    assert r.status_code == 401
 
 
-def test_expired_bearer_falls_back_to_workspace(client):
+def test_expired_bearer_is_rejected(client):
+    """过期 token 同理 —— 明确告知重新登录，而不是静默清空用户视野。"""
     r = client.get("/users/me/profile", headers={"Authorization": f"Bearer {_token('alice', ttl=-1)}"})
-    assert r.json()["user_id"] == "default"
+    assert r.status_code == 401
 
 
 def test_profiles_are_isolated_per_user(client):

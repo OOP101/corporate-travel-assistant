@@ -20,3 +20,11 @@ export async function unsubscribeMonitor(tripId) {
 export async function manualCheck() {
   return postEmpty('/api/sense/monitor/check');
 }
+
+/**
+ * 实时数据直查（问答路径同款接口，不等监控订阅）
+ * type: weather | flight | train
+ */
+export async function realtimeQuery(payload) {
+  return post('/api/sense/query', payload);
+}

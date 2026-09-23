@@ -7,33 +7,10 @@ import {
   getReportOverview, getReportByDepartment, getReportByMonth,
 } from '../api/organization';
 import { PageHeader, Card, Button, StatCard, EmptyState } from '../components';
-
-const fmtMoney = (v) => `¥${(v ?? 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
-const fmtInt = (v) => (v ?? 0).toLocaleString();
-
-// 行程状态 → 中文（报表聚合来自 trip.status，key 可能与前端常量一致）
-const TRIP_STATUS = {
-  planned: '已规划',
-  pending_approval: '待审批',
-  approved: '已批准',
-  rejected: '已拒绝',
-  cancelled: '已取消',
-  completed: '已完成',
-};
-
-const REIMB_STATUS = {
-  pending: '待审批',
-  approved: '已通过',
-  rejected: '已拒绝',
-  reimbursed: '已打款',
-};
-
-const APPROVAL_STATUS = {
-  pending: '待审批',
-  approved: '已批准',
-  rejected: '已拒绝',
-  cancelled: '已取消',
-};
+import {
+  TRIP_STATUS, REIMB_STATUS, APPROVAL_STATUS,
+  fmtMoney, fmtInt, countOf, amountOf,
+} from '../config/status';
 
 export default function ReportsPage() {
   const [overview, setOverview] = useState(null);
@@ -64,18 +41,33 @@ export default function ReportsPage() {
 
   useEffect(() => { loadAll(); }, [loadAll]);
 
-  const renderStatusChips = (byStatus, labelMap, moneyKey) => {
-    if (!byStatus) return null;
-    const entries = Object.entries(byStatus);
-    if (entries.length === 0) return null;
+  /**
+   * 状态分布 chip。
+   *
+   * 后端两种口径并存：trips.by_status 的值是纯数字，reimbursements/approvals
+   * 的值是 {count, amount} 对象，故按值类型分支渲染（此前把对象直接丢给
+   * fmtMoney → 页面出现「已批准 [object Object]」）。
+   */
+  const renderStatusChips = (byStatus, labelMap, unit = '') => {
+    const entries = byStatus ? Object.entries(byStatus) : [];
+    if (entries.length === 0) {
+      return <div className="mt-3 text-[11px] text-ink-400">暂无数据</div>;
+    }
     return (
       <div className="flex flex-wrap gap-1.5 mt-3">
         {entries.map(([k, v]) => {
           const label = labelMap[k] || k;
-          const val = moneyKey ? fmtMoney(v) : fmtInt(v);
+          const count = countOf(v);
+          const amount = amountOf(v);
           return (
-            <span key={k} className="text-[11px] px-2 py-0.5 rounded-full bg-gray-100 text-ink-500">
-              {label}: {val}
+            <span
+              key={k}
+              className="text-[11px] px-2 py-0.5 rounded-full bg-gray-100 text-ink-500"
+              title={amount != null ? `涉及金额 ${fmtMoney(amount)}` : undefined}
+            >
+              {label}: {fmtInt(count)}
+              {unit}
+              {amount != null && ` · ${fmtMoney(amount)}`}
             </span>
           );
         })}
@@ -149,11 +141,11 @@ export default function ReportsPage() {
                 </Card>
                 <Card>
                   <div className="text-[13px] font-semibold text-ink-900">报销状态分布</div>
-                  {renderStatusChips(overview.reimbursements?.by_status, REIMB_STATUS, true)}
+                  {renderStatusChips(overview.reimbursements?.by_status, REIMB_STATUS, ' 笔')}
                 </Card>
                 <Card>
                   <div className="text-[13px] font-semibold text-ink-900">审批状态分布</div>
-                  {renderStatusChips(overview.approvals?.by_status, APPROVAL_STATUS, true)}
+                  {renderStatusChips(overview.approvals?.by_status, APPROVAL_STATUS, ' 单')}
                 </Card>
               </div>
 

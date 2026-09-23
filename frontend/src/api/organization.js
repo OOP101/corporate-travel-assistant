@@ -126,6 +126,10 @@ export async function searchPolicyDocs(query, category = '') {
   return post(`${BASE_URL}/policy-docs/search`, { query, category });
 }
 
+export async function reindexPolicyDocs(force = false) {
+  return postEmpty(`${BASE_URL}/policy-docs/reindex?force=${force}`);
+}
+
 // ============================================
 // 审批管理
 // ============================================

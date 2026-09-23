@@ -16,6 +16,7 @@ const GRADIENTS = [
 export default function TripsPage() {
   const [trips, setTrips] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
   const [showGenerate, setShowGenerate] = useState(false);
   const [gen, setGen] = useState(() => generationStore.get());
   const navigate = useNavigate();
@@ -31,11 +32,16 @@ export default function TripsPage() {
 
   const loadTrips = async () => {
     setLoading(true);
+    setError('');
     try {
       const data = await listTrips();
       setTrips(data.trips || []);
     } catch (e) {
+      // 不能静默吞掉：请求失败（如登录态过期 401）与「确实没有行程」是两回事，
+      // 静默处理会把故障伪装成空列表，用户只看到「还没有行程」而查不到原因。
       console.error(e);
+      setError(e?.message || '行程列表加载失败');
+      setTrips([]);
     }
     setLoading(false);
   };
@@ -204,12 +210,25 @@ export default function TripsPage() {
         {loading ? (
           <div className="flex justify-center py-24"><Loader2 className="animate-spin text-ink-400" size={26} /></div>
         ) : trips.length === 0 ? (
-          <EmptyState
-            icon={<Plane size={24} />}
-            title="还没有行程"
-            description="用一句话描述出行需求，AI 帮你生成完整差旅计划"
-            action={{ label: '创建第一个行程', onClick: () => setShowGenerate(true) }}
-          />
+          error ? (
+            <div className="max-w-xl mx-auto mt-12 rounded-xl border border-red-200 bg-red-50 px-5 py-4">
+              <p className="text-sm font-medium text-red-700">行程列表加载失败</p>
+              <p className="mt-1 text-[13px] text-red-600">{error}</p>
+              <button
+                onClick={loadTrips}
+                className="mt-3 px-3 py-1.5 rounded-lg bg-white border border-red-300 text-red-700 text-[13px] hover:bg-red-100 transition-colors"
+              >
+                重试
+              </button>
+            </div>
+          ) : (
+            <EmptyState
+              icon={<Plane size={24} />}
+              title="还没有行程"
+              description="用一句话描述出行需求，AI 帮你生成完整差旅计划"
+              action={{ label: '创建第一个行程', onClick: () => setShowGenerate(true) }}
+            />
+          )
         ) : (
           <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3 max-w-6xl">
             {trips.map((trip, idx) => (

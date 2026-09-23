@@ -7,6 +7,9 @@
   2. .run/*.pid 过期，stop_local.py 按 PID 杀进程杀不掉
   3. EXE 内打包的是旧 launcher，需要重新构建
 
+打包产物布局：spec / build / dist 全部落在 .build/（每次打包前整体清空），
+根目录只保留最终启动器 CorporateJourneyHub.exe，不再散落小文件。
+
 用法（双击或命令行均可）:
     python scripts/rebuild_and_restart.py            # 完整流程（停止+打包+启动+验证）
     python scripts/rebuild_and_restart.py --no-build # 跳过打包，只重启并验证
@@ -78,16 +81,17 @@ def stop_services():
 
 
 def build_exe():
-    step("2/重新打包 EXE")
-    bat = ROOT / "build_exe.bat"
-    if not bat.exists():
-        log("  [跳过] 未找到 build_exe.bat")
+    step("2/重新打包 EXE（中间产物收进 .build/）")
+    script = ROOT / "scripts" / "build_exe.py"
+    if not script.exists():
+        log("  [跳过] 未找到 scripts/build_exe.py")
         return
-    r = run(["cmd", "/c", str(bat)], capture_output=True, text=True)
+    # 不捕获输出：PyInstaller 日志直接流到本控制台，失败原因一眼可见
+    r = run([venv_python(), script])
     if r.returncode == 0 and EXE.exists():
         log(f"  [OK] 打包完成: {EXE.name}")
     else:
-        log(f"  [警告] 打包可能失败（退出码 {r.returncode}），请查看上方输出")
+        log(f"  [警告] 打包失败（退出码 {r.returncode}），详见上方 PyInstaller 输出")
         log("  不影响服务运行（EXE 只是启动器），继续启动服务。")
 
 

@@ -1,4 +1,4 @@
-import { get, postEmpty, put, del, ssePost } from './client';
+import { get, post, postEmpty, put, del, ssePost } from './client';
 
 // --- 行程 ---
 // 身份不由前端声明：planner 从 Authorization: Bearer 解出登录用户名
@@ -64,8 +64,45 @@ export async function updateProfile(data) {
   return put('/api/planner/users/me/profile', data);
 }
 
-// --- 模板 ---
+// --- 应变重排（景点闭馆 / 航班延误 / 时长变更后重排后续行程）---
+export async function rerouteTrip(tripId, changedActivity, reason = '') {
+  return post(`/api/planner/trips/${tripId}/reroute`, {
+    changed_activity: changedActivity,
+    reason,
+  });
+}
+
+// --- 模板（全套）---
 export async function listTemplates(tags = '') {
   const qs = tags ? `?tags=${encodeURIComponent(tags)}` : '';
   return get(`/api/planner/templates${qs}`);
+}
+
+export async function getTemplate(templateId) {
+  return get(`/api/planner/templates/${templateId}`);
+}
+
+export async function saveTripAsTemplate(tripId, templateName, tags = []) {
+  return post(`/api/planner/trips/${tripId}/template`, {
+    template_name: templateName,
+    tags,
+  });
+}
+
+export async function applyTemplate(templateId, overrides = {}) {
+  return post(`/api/planner/templates/${templateId}/apply`, { overrides });
+}
+
+export async function deleteTemplate(templateId) {
+  return del(`/api/planner/templates/${templateId}`);
+}
+
+// --- 常用同行人 ---
+export async function listCompanions() {
+  return get('/api/planner/users/me/companions');
+}
+
+export async function addCompanion(data) {
+  // data: { name, role: 'adult'|'child'|'elder', age, notes }
+  return post('/api/planner/users/me/companions', data);
 }

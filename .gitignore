@@ -1,5 +1,10 @@
 # 大二进制与运行时数据，不入库
 CorporateJourneyHub.exe
+# PyInstaller 打包产物：中间文件统一落在 .build/，根目录只留 exe
+.build/
+build/
+dist/
+*.spec
 data/
 .run/
 .logs/

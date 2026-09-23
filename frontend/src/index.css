@@ -110,3 +110,141 @@ body {
 .hairline {
   border-top: 1px solid #eef0f5;
 }
+
+/* ============================================================
+   数据台模式 · 深色侧边栏 + 浅色内容区
+   ============================================================ */
+:root {
+  --sidebar-bg: #0f1729;
+  --sidebar-panel: #18223c;
+  --sidebar-text: #93a1bd;
+  --sidebar-line: rgba(255, 255, 255, 0.07);
+  --content-bg: #f6f7fb;
+  --line: #e9ecf3;
+}
+
+.app-shell { background: var(--content-bg); }
+
+/* 深色区滚动条 */
+.sidebar-scroll::-webkit-scrollbar-thumb { background: #2b3752; }
+.sidebar-scroll::-webkit-scrollbar-thumb:hover { background: #3b4a6b; }
+
+/* 数据表格 */
+.data-table { width: 100%; border-collapse: collapse; }
+.data-table thead th {
+  text-align: left; font-size: 11px; font-weight: 500; letter-spacing: 0.04em;
+  color: #8a93a6; padding: 0 14px 10px; white-space: nowrap;
+}
+.data-table tbody td {
+  padding: 12px 14px; border-top: 1px solid var(--line);
+  font-size: 13px; color: #1f2937; vertical-align: middle;
+}
+.data-table tbody tr { transition: background 0.12s ease; }
+.data-table tbody tr:hover { background: #fafbfe; }
+.data-table tbody tr.is-clickable { cursor: pointer; }
+
+/* 骨架屏 */
+.skeleton {
+  background: linear-gradient(90deg, #eef0f6 25%, #f6f7fb 37%, #eef0f6 63%);
+  background-size: 400% 100%;
+  animation: skeleton-shimmer 1.4s ease infinite;
+  border-radius: 6px;
+}
+@keyframes skeleton-shimmer {
+  0% { background-position: 100% 50%; }
+  100% { background-position: 0 50%; }
+}
+
+/* 抽屉滑入 */
+@keyframes drawer-in {
+  from { transform: translateX(18px); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+.drawer-panel { animation: drawer-in 0.18s ease-out; }
+
+/* 数字等宽：报表与费用列对齐 */
+.tnum { font-variant-numeric: tabular-nums; }
+
+/* 侧边栏导航项 */
+.nav-item {
+  position: relative;
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 10px; border-radius: 8px;
+  font-size: 13px; color: var(--sidebar-text);
+  transition: background 0.14s ease, color 0.14s ease;
+}
+.nav-item:hover { background: rgba(255, 255, 255, 0.05); color: #dbe3f1; }
+.nav-item.is-active { background: rgba(99, 102, 241, 0.16); color: #fff; font-weight: 500; }
+.nav-item.is-active::before {
+  content: ''; position: absolute; left: -10px; top: 50%; transform: translateY(-50%);
+  width: 3px; height: 16px; border-radius: 0 3px 3px 0; background: #818cf8;
+}
+.nav-item.is-active svg { color: #a5b4fc; }
+
+/* 深色侧边栏内的时间戳/次要字 */
+.sidebar-muted { color: #5f6c88; }
+
+/* ---------- 侧边栏纵向节奏：一屏装下 ----------
+   12 个导航项 + 底部用户块，目标是 768p 笔记本（可视高约 640px）也不出现滚动。
+   高屏保持宽松呼吸感，短屏自动收紧。nav-scroll 仍保留 overflow-y-auto 兜底。 */
+.app-sidebar {
+  --nav-item-py: 7px;
+  --nav-group-gap: 16px;
+  --nav-label-mb: 6px;
+  --nav-pad-y: 12px;
+}
+@media (max-height: 820px) {
+  .app-sidebar {
+    --nav-item-py: 5px;
+    --nav-group-gap: 11px;
+    --nav-label-mb: 4px;
+    --nav-pad-y: 8px;
+  }
+}
+.app-sidebar .nav-item {
+  padding-top: var(--nav-item-py);
+  padding-bottom: var(--nav-item-py);
+}
+.app-sidebar .nav-scroll {
+  padding-top: var(--nav-pad-y);
+  padding-bottom: var(--nav-pad-y);
+}
+.app-sidebar .nav-group + .nav-group { margin-top: var(--nav-group-gap); }
+.app-sidebar .nav-label { margin-bottom: var(--nav-label-mb); }
+
+/* 可折叠分组标题（企业管理）：折叠时只占一行 */
+.app-sidebar .nav-group-toggle {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 8px; width: 100%; cursor: pointer;
+  padding: 4px 10px; border: 0; border-radius: 6px; background: transparent;
+  font-size: 10px; font-weight: 500; letter-spacing: 0.14em;
+  color: #5f6c88;
+  transition: color 0.14s ease, background 0.14s ease;
+}
+.app-sidebar .nav-group-toggle:hover { color: #93a1bd; background: rgba(255, 255, 255, 0.04); }
+.app-sidebar .nav-group-toggle svg { transition: transform 0.18s ease; }
+.app-sidebar .nav-group-toggle.is-open { margin-bottom: var(--nav-label-mb); }
+.app-sidebar .nav-group-toggle.is-open svg { transform: rotate(180deg); }
+
+/* 用户菜单弹层（从底部向上展开） */
+.app-sidebar .user-menu {
+  position: absolute; left: 12px; right: 12px; bottom: calc(100% + 6px);
+  padding: 6px; border-radius: 12px;
+  background: var(--sidebar-panel);
+  border: 1px solid var(--sidebar-line);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+  animation: user-menu-in 0.14s ease-out;
+}
+@keyframes user-menu-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.app-sidebar .user-menu-label {
+  padding: 4px 10px 6px; font-size: 10px; letter-spacing: 0.14em;
+  text-transform: uppercase; color: #5f6c88;
+}
+.app-sidebar .user-menu hr {
+  margin: 5px 0; border: 0; border-top: 1px solid var(--sidebar-line);
+}
+.app-sidebar .user-menu .danger { color: #f0a0a0; }
+.app-sidebar .user-menu .danger:hover { background: rgba(244, 63, 94, 0.14); color: #fecaca; }

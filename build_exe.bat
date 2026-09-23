@@ -1,28 +1,34 @@
 @echo off
 setlocal
 set "NODE_OPTIONS="
-where python >nul 2>nul
-if errorlevel 1 (
-    echo Python not found. Please install Python 3.10+ and add to PATH.
-    pause
-    exit /b 1
+cd /d "%~dp0"
+
+set "PY=%~dp0.venv\Scripts\python.exe"
+if exist "%PY%" goto run
+where py >nul 2>nul
+if not errorlevel 1 (
+    set "PY=py"
+    goto run
 )
-echo Installing PyInstaller...
-python -m pip install pyinstaller -q
+set "PY=python"
+
+:run
+echo ============================================================
+echo  Corporate Journey Hub - Build EXE
+echo  Intermediate files go to .build/  -  the root stays clean
+echo ============================================================
+echo.
+
+"%PY%" "%~dp0scripts\build_exe.py" %*
+
 if errorlevel 1 (
-    echo PyInstaller install failed.
-    pause
-    exit /b 1
-)
-echo Building one-file exe (CorporateJourneyHub)...
-python -m PyInstaller --onefile --console --clean --name CorporateJourneyHub "%~dp0launcher.py"
-if exist "dist\CorporateJourneyHub.exe" (
-    copy /Y "dist\CorporateJourneyHub.exe" "%~dp0CorporateJourneyHub.exe" >nul
     echo.
-    echo Build complete: CorporateJourneyHub.exe
-    echo Place it in the project root (same dir as frontend/ and launcher.py).
+    echo [FAILED] Build did not complete. See the output above.
 ) else (
-    echo Build failed, see output above.
-    pause
+    echo.
+    echo [OK] CorporateJourneyHub.exe is ready in the project root.
 )
+
+echo.
+pause
 endlocal

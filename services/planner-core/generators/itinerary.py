@@ -18,7 +18,7 @@ import json
 import logging
 import re
 import time
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Generator, Optional
 
 from shared.llm import LLMManager, parse_json_tolerant
@@ -168,6 +168,22 @@ PLANNING_RULES = PLANNING_RULES_BASE + _SCENE_RULES["personal"] + _OUTPUT_FORMAT
 REQUIRED_PARAMS = ("scene", "destination", "start_date", "days")
 # 允许代填的参数（兜底补默认并记入 defaulted，由用户确认页展示）
 AUTOFILL_PARAMS = ("origin", "num_adults", "budget_total")
+
+# 「你看着办 / 随便」类话术 = 用户对代填的显式授权（PRD §6.3）。
+# 命中即按规则代填日期与天数、不再反问；否则用户每点一次该入口都会重新命中
+# 同一批缺参 → 无限循环反问（2026-09-23 用户实测复现，点 5 次得 5 遍同样的话）。
+_AUTOFILL_AUTH_RE = re.compile(
+    r"你看着办|看着办|你决定|你来定|你安排|帮我决定|听你的|随便|随意|都行|"
+    r"都可以|无所谓|按常见差旅|按默认|默认补全|你定吧"
+)
+# 授权代填时的天数规则（PRD §6.2 兜底话术示例：商务出差 2 天）
+AUTH_DEFAULT_DAYS = {"business": 2, "meeting": 3, "visit": 2, "team": 2, "personal": 3}
+AUTH_DEFAULT_DAYS_FALLBACK = 2
+
+
+def is_autofill_authorized(text: str) -> bool:
+    """用户是否显式授权「按常见差旅默认补全」（PRD §6.3：随便/你看着办 = 跳过澄清）。"""
+    return bool(_AUTOFILL_AUTH_RE.search(str(text or "")))
 
 
 class ItineraryGenerator:
@@ -734,6 +750,29 @@ class ItineraryGenerator:
         params["scene"] = params["scene"] if params["scene"] in _SCENE_NAMES else None
         params["transport"] = normalize_transport(params.get("transport"))
 
+        # 0) 授权代填（PRD §6.3）：「你看着办 / 随便」= 用户显式授权跳过澄清。
+        #    必须放在缺参判定「之前」补日期与天数——否则用户点一次该入口，缺参清单
+        #    原样重现、又生成同样一句反问，形成死循环（dest 无法规则代填，仍需追问）。
+        defaulted = []
+        if is_autofill_authorized(query):
+            if not params.get("start_date"):
+                params["start_date"] = (date.today() + timedelta(days=1)).strftime("%Y-%m-%d")
+                defaulted.append({
+                    "field": "start_date",
+                    "value": params["start_date"],
+                    "note": "授权代填：默认明天出发",
+                })
+            if not params.get("days"):
+                days_default = AUTH_DEFAULT_DAYS.get(
+                    params.get("scene") or "", AUTH_DEFAULT_DAYS_FALLBACK
+                )
+                params["days"] = days_default
+                defaulted.append({
+                    "field": "days",
+                    "value": days_default,
+                    "note": f"授权代填：默认 {days_default} 天",
+                })
+
         # 日期/天数归一：days 与 (start_date,end_date) 二选一即可满足
         try:
             if params.get("days") is not None:
@@ -766,7 +805,7 @@ class ItineraryGenerator:
             missing.append("days")
 
         # 2) 可代填字段兜底（有明确规则，非模型自由发挥），记入 defaulted 供确认页展示
-        defaulted = []
+        #    注：defaulted 已在步骤 0 初始化，此处沿用同一列表累积授权代填记录
         if params.get("num_adults") is None and not any(
             params.get(k) for k in ("num_children", "num_elders")
         ):

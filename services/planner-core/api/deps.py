@@ -4,7 +4,7 @@
 """
 from typing import Optional
 
-from fastapi import Request
+from fastapi import HTTPException, Request
 
 from shared.config import settings
 from shared.llm import LLMManager
@@ -44,6 +44,9 @@ def declared_user_id(request: Request, session_id: str = "") -> Optional[str]:
     与 `resolve_user_id` 的区别在于「未声明」是一等状态：属主校验必须能区分
     「声明了别人」和「根本没声明」——前者要拒，后者是直接调 API / 演示路径，放行。
     API Key 的 workspace 属于兜底容器，不算声明。
+
+    第三种状态是「声明了但无效」：带了 Bearer 却验不过签名/有效期，抛 401。
+    这不等同于「没声明」，不能落到 workspace 兜底（详见下方 raise 处注释）。
     """
     auth_header = request.headers.get("Authorization", "")
     token = auth_header[7:].strip() if auth_header.startswith("Bearer ") else ""
@@ -51,6 +54,12 @@ def declared_user_id(request: Request, session_id: str = "") -> Optional[str]:
         info = SignedSession.decode(token, settings.session_secret)
         if info and info.get("username"):
             return info["username"]
+        # 带了 Bearer 却验不过（SESSION_SECRET 变更 / token 超期）——显式拒绝。
+        # 关键：不能静默回退到 workspace 兜底。兜底值是 "default"，而用户数据挂在
+        # username 名下，回退后 /trips 之类按归属过滤的接口会返回 200 + 空数组，
+        # 前端把空数组渲染成「还没有行程」——故障表现为「查无数据」而非「登录失效」，
+        # 排查成本极高（本次线上现象即由此放大）。
+        raise HTTPException(401, "登录已过期，请重新登录")
     return session_id or None
 
 
