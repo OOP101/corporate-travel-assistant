@@ -98,4 +98,6 @@ python launcher.py status     # 查看服务状态
 pytest --basetemp=./.pytest_tmp -q
 ```
 
-**230 passed / 0 failed**（15 个测试文件，2026-09-23 实测 28.3s）。
+**230 passed / 0 failed**（`pytest.ini` 的 `testpaths = services tests`，两目录共 19 个测试文件；2026-09-23 实测 8.9s）。
+
+> 口径提示：必须在**仓库根目录**执行。只跑 `pytest tests/` 会漏掉 `services/` 下 4 个测试文件（实测 192 项）。
