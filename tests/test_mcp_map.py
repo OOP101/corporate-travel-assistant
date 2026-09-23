@@ -171,6 +171,54 @@ def test_query_unavailable_no_call(mcp_mod, stub_cls):
     assert stub.calls == []
 
 
+def test_route_query_geocodes_first(mcp_mod, stub_cls):
+    """路线类查询：先两段 geocoder 预解析（lat,lng），坐标命中后替换 from/to。"""
+    geo_text = "纬度（latitude）：34.376170 经度（latitude）：108.938544 省：陕西省"
+    route_result = {"tool": "directionDriving", "args": {}, "text": "路线总距离：15665米"}
+
+    class GeoStub(stub_cls):
+        async def _acall(self, tool, args):
+            self.calls.append((tool, args))
+            if tool == "geocoder":
+                return {"tool": tool, "args": args, "text": geo_text}
+            return {"tool": tool, "args": args, "text": "路线总距离：15665米"}
+
+    stub = GeoStub(result=route_result)
+    out = stub.query("从西安北站到钟楼怎么走")
+    assert out is not None and out["geocoded"] is True
+    # from/to 已替换为 lat,lng 坐标
+    final_args = out["args"]
+    assert final_args["from"] == "34.376170,108.938544"
+    assert final_args["to"] == "34.376170,108.938544"
+    tools_called = [t for t, _ in stub.calls]
+    assert tools_called.count("geocoder") == 2 and "directionDriving" in tools_called
+
+
+def test_route_query_geocode_fail_falls_back(mcp_mod, stub_cls):
+    """geocoder 解析失败 → 保留原地名参数直调路线工具，不阻断。"""
+    route_result = {"tool": "directionDriving", "args": {}, "text": "无路线信息"}
+
+    class BadGeoStub(stub_cls):
+        async def _acall(self, tool, args):
+            self.calls.append((tool, args))
+            if tool == "geocoder":
+                return {"tool": tool, "args": args, "text": "解析失败"}
+            return {"tool": tool, "args": args, "text": "无路线信息"}
+
+    stub = BadGeoStub(result=route_result)
+    out = stub.query("从西安北站到钟楼怎么走")
+    assert out is not None and out["geocoded"] is False
+    assert out["args"]["from"] == "西安北站" and out["args"]["to"] == "钟楼"
+
+
+def test_coords_from_geocode_parse(mcp_mod):
+    TencentMapMCP, _ = mcp_mod
+    text = "纬度（latitude）：34.259430 经度（latitude）：108.947040 省：陕西省"
+    assert TencentMapMCP._coords_from_geocode(text) == "34.259430,108.947040"
+    assert TencentMapMCP._coords_from_geocode("解析失败") is None
+    assert TencentMapMCP._coords_from_geocode("") is None
+
+
 # ---------------------------------------------------------------------------
 # 四、上下文注入（ToolHandlers._map_mcp_context）
 # ---------------------------------------------------------------------------

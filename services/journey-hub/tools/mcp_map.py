@@ -32,7 +32,11 @@ from typing import Any, Dict, Optional, Tuple
 logger = logging.getLogger("journey-hub.mcp-map")
 
 DEFAULT_MCP_URL = "https://mcp.map.qq.com/sse"
-_CALL_TIMEOUT = 15  # 秒，含 SSE 握手
+_CALL_TIMEOUT = 30  # 秒，含 SSE 握手（路线查询 = 两段 geocode 并行 + 一次路线工具）
+
+# 路线/矩阵类工具要求 lat,lng 坐标（服务端不代解析地名）→ 查询前先两段 geocoder 预解析
+_ROUTE_TOOLS = frozenset({"directionDriving", "directionTransit", "directionWalking", "matrix"})
+_COORD_RE = re.compile(r"纬度[^0-9]*?([0-9]+(?:\.[0-9]+)?)[^0-9]*?经度[^0-9]*?([0-9]+(?:\.[0-9]+)?)", re.S)
 
 
 # ---------------------------------------------------------------------------
@@ -151,6 +155,33 @@ class TencentMapMCP:
                 text = res.content[0].text if res.content else ""
                 return {"tool": tool, "args": args, "text": text}
 
+    @staticmethod
+    def _coords_from_geocode(text: str) -> Optional[str]:
+        """geocoder 返回文本 → "lat,lng"；解析失败返回 None。"""
+        m = _COORD_RE.search(text or "")
+        return f"{m.group(1)},{m.group(2)}" if m else None
+
+    async def _acall_route(self, tool: str, args: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """路线类查询：先并行 geocoder 预解析起/终点坐标（lat,lng），再调路线工具。
+
+        坐标解析失败的一方保留原参数（服务端自行兜底）；整体失败向上抛，由 query 静默。
+        """
+        g_from, g_to = await asyncio.gather(
+            self._acall("geocoder", {"address": str(args.get("from", ""))}),
+            self._acall("geocoder", {"address": str(args.get("to", ""))}),
+        )
+        c_from = self._coords_from_geocode((g_from or {}).get("text", "")) if g_from else None
+        c_to = self._coords_from_geocode((g_to or {}).get("text", "")) if g_to else None
+        final = dict(args)
+        if c_from:
+            final["from"] = c_from
+        if c_to:
+            final["to"] = c_to
+        out = await self._acall(tool, final)
+        if isinstance(out, dict):
+            out["geocoded"] = bool(c_from and c_to)
+        return out
+
     def query(self, query_text: str) -> Optional[Dict[str, Any]]:
         """同步门面：路由动作 → MCP 实查。任何失败返回 None，绝不抛出。"""
         if not self.is_available():
@@ -160,8 +191,9 @@ class TencentMapMCP:
             return None
         tool, args = plan
         try:
-            return asyncio.run(asyncio.wait_for(self._acall(tool, args),
-                                                timeout=_CALL_TIMEOUT))
+            coro = (self._acall_route(tool, args) if tool in _ROUTE_TOOLS
+                    else self._acall(tool, args))
+            return asyncio.run(asyncio.wait_for(coro, timeout=_CALL_TIMEOUT))
         except Exception as e:  # 网络/协议/事件循环占用 → 一律静默
             logger.warning(f"腾讯地图 MCP 调用失败（tool={tool}）: {e}")
             return None
