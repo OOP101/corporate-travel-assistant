@@ -1,14 +1,17 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import {
   Bell, RefreshCw, Info, Loader2, Plane, Cloud, Car, MapPin, Radio, Activity,
-  ShieldAlert, TrainFront, Plus, Trash2, Zap, Search,
+  ShieldAlert, TrainFront, Plus, Trash2, Zap, Search, X,
 } from 'lucide-react';
 import {
   getMonitorStatus, manualCheck, subscribeMonitor, unsubscribeMonitor, realtimeQuery,
 } from '../api/sense';
 import { listTrips } from '../api/planner';
 import { currentUserId } from '../api/auth';
-import { PageHeader, StatCard, Badge, Button, EmptyState, Tab, Card } from '../components';
+import {
+  PageHeader, StatCard, Badge, Button, EmptyState, Tab, Card, TagInput,
+  WeatherCard, FlightCard, TrainCard, ResultSummary, weatherSeverity,
+} from '../components';
 
 const SEVERITY_META = {
   info: { tone: 'blue', border: 'border-blue-200', label: '提示' },
@@ -361,68 +364,154 @@ export default function AlertsPage() {
   );
 }
 
-/** 实时直查：问答路径同款接口，同步返回、不等监控订阅 */
+/* 常用城市 / 站点：一点即入列，省得手打。
+   要增删城市，只改 COMMON_CITIES 这一行即可——顺序 = chips 展示顺序。 */
+const COMMON_CITIES = [
+  // 直辖市 / 一线
+  '北京', '广州', '深圳', '天津', '重庆',
+  // 省会 / 计划单列市 / 经济大市
+  '西安', '成都', '杭州', '南京', '武汉', '长沙', '郑州', '青岛', '厦门', '苏州',
+  '宁波', '济南', '合肥', '南昌', '昆明', '福州', '沈阳', '大连', '哈尔滨', '贵阳',
+];
+const COMMON_FLIGHTS = ['CA1234', 'MU5100', 'CZ3101', 'HU7801'];
+const COMMON_TRAINS = ['G102', 'G7', 'D301', 'Z21'];
+const DEFAULT_CITIES = ['西安', '北京', '广州', '深圳'];
+const MAX_ITEMS = 8;
+/** 西→东：先按输入顺序，异常项不挪位（避免卡片跳来跳去） */
+const num = (v) => (typeof v === 'number' ? v : 0);
+
+/**
+ * 实时直查：问答路径同款接口，同步返回、不等监控订阅。
+ * 后端是「单值查询」，多城市/多航班由前端并行拆请求，一值一卡。
+ */
 function QueryPanel() {
   const [type, setType] = useState('weather');
-  const [form, setForm] = useState({
-    city: '', flight_number: '', origin: '', destination: '',
-    train_code: '', train_from: '', train_to: '', train_date: '',
-  });
-  const [result, setResult] = useState(null);
+  const [cities, setCities] = useState(DEFAULT_CITIES);
+  const [flights, setFlights] = useState([]);
+  const [trains, setTrains] = useState([]);
+  const [flightRoute, setFlightRoute] = useState({ origin: '', destination: '' });
+  const [trainCtx, setTrainCtx] = useState({ train_from: '', train_to: '', train_date: '' });
+  const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
+  const runIdRef = useRef(0);   // 防竞态：重查后丢弃在途的旧响应
+  const autoRef = useRef(false);
 
-  const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
+  const lists = { weather: cities, flight: flights, train: trains };
+  const current = lists[type] || [];
+  const canRun = current.length > 0;
+
+  const setList = (v) => {
+    if (type === 'weather') setCities(v);
+    else if (type === 'flight') setFlights(v);
+    else setTrains(v);
+  };
+
+  /** 打平成「一项 = 一张卡」的查询清单 */
+  const buildItems = () => {
+    if (type === 'weather') {
+      return cities.map((c) => ({ key: `w:${c}`, label: c, payload: { type: 'weather', city: c } }));
+    }
+    if (type === 'flight') {
+      return flights.map((f) => ({
+        key: `f:${f}`,
+        label: f,
+        payload: {
+          type: 'flight',
+          flight_number: f,
+          origin: flightRoute.origin.trim(),
+          destination: flightRoute.destination.trim(),
+        },
+      }));
+    }
+    return trains.map((t) => ({
+      key: `t:${t}`,
+      label: t,
+      payload: {
+        type: 'train',
+        train_code: t,
+        train_from: trainCtx.train_from.trim(),
+        train_to: trainCtx.train_to.trim(),
+        train_date: trainCtx.train_date.trim(),
+      },
+    }));
+  };
 
   const run = async () => {
+    const items = buildItems();
+    if (!items.length) return;
+    const runId = ++runIdRef.current;
     setLoading(true);
-    setError('');
-    setResult(null);
-    try {
-      const payload = { type };
-      if (type === 'weather') {
-        payload.city = form.city.trim();
-      } else if (type === 'flight') {
-        Object.assign(payload, {
-          flight_number: form.flight_number.trim(),
-          origin: form.origin.trim(),
-          destination: form.destination.trim(),
-        });
-      } else {
-        Object.assign(payload, {
-          train_code: form.train_code.trim(),
-          train_from: form.train_from.trim(),
-          train_to: form.train_to.trim(),
-          train_date: form.train_date.trim(),
-        });
+    setRows(items.map((it) => ({ key: it.key, label: it.label, status: 'loading' })));
+
+    // 并行发出、逐张落地：先回来的先渲染，不等最慢的那个
+    await Promise.all(items.map(async (it, idx) => {
+      try {
+        const res = await realtimeQuery(it.payload);
+        if (runId !== runIdRef.current) return;
+        setRows((rs) => rs.map((r, i) => (i === idx ? { ...r, status: 'ok', data: res.data } : r)));
+      } catch (e) {
+        if (runId !== runIdRef.current) return;
+        setRows((rs) => rs.map((r, i) => (i === idx ? { ...r, status: 'err', error: e.message || '查询失败' } : r)));
       }
-      const res = await realtimeQuery(payload);
-      setResult(res);
-    } catch (e) {
-      setError(e.message || '查询失败');
-    }
+    }));
+    if (runId === runIdRef.current) setLoading(false);
+  };
+
+  // 进来就先把默认城市查出来，省掉「切过来还要再点一下」
+  useEffect(() => {
+    if (autoRef.current) return;
+    autoRef.current = true;
+    run();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // 切类型时清掉上一类的结果，避免张冠李戴
+  const switchType = (v) => {
+    runIdRef.current += 1;   // 丢弃在途响应
+    setType(v);
+    setRows([]);
     setLoading(false);
   };
 
+  const toggleCommon = (v) => {
+    const has = current.includes(v);
+    if (has) setList(current.filter((x) => x !== v));
+    else if (current.length < MAX_ITEMS) setList([...current, v]);
+  };
+
+  const doneCount = rows.filter((r) => r.status !== 'loading').length;
+  const failedCount = rows.filter((r) => r.status === 'err').length;
+  const alertCount = rows.filter((r) => {
+    if (r.status !== 'ok' || !r.data) return false;
+    if (type === 'weather') return !!weatherSeverity(r.data.condition, r.data.temp);
+    if (type === 'flight') return r.data.status === 'delayed' || r.data.status === 'cancelled';
+    return r.data.status === 'soldout' || r.data.status === 'cancelled';
+  }).length;
+  const mockAll = rows.length > 0 && rows.every((r) => r.status === 'ok' && r.data?.mock);
+
+  const gridCls = type === 'weather'
+    ? 'grid gap-3 grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4'
+    : 'grid gap-3 grid-cols-1 sm:grid-cols-2 xl:grid-cols-3';
+
   return (
-    <div className="max-w-3xl mx-auto space-y-5">
+    <div className="max-w-6xl mx-auto space-y-4">
       <Card>
         <div className="flex items-start gap-2.5 text-[12px] text-ink-600 leading-relaxed">
           <Zap size={14} className="text-primary-500 mt-0.5 shrink-0" />
           <span>
-            问答路径的同一个接口：同步直查、立即返回，不建立监控订阅。适合「现在天气怎么样」这类即时问题；
-            需要持续盯变化时才走「监控订阅」。
+            问答路径的同一个接口：同步直查、立即返回，不建立监控订阅。支持一次填多个值 —— 多城市天气 /
+            多航班 / 多车次并行查询，一值一卡；需要持续盯变化时才走「监控订阅」。
           </span>
         </div>
       </Card>
 
       <Card>
-        <div className="flex flex-wrap gap-1.5 mb-4">
+        <div className="flex flex-wrap items-center gap-1.5 mb-4">
           {QUERY_TYPES.map(({ value, label, icon: Icon }) => (
             <button
               key={value}
               type="button"
-              onClick={() => { setType(value); setResult(null); setError(''); }}
+              onClick={() => switchType(value)}
               className={`flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-[13px] border transition-colors ${
                 type === value
                   ? 'bg-primary-50 text-primary-700 border-primary-200 font-medium'
@@ -432,118 +521,165 @@ function QueryPanel() {
               <Icon size={14} /> {label}
             </button>
           ))}
+          <span className="ml-auto text-[11px] text-ink-400">单次最多 {MAX_ITEMS} 项</span>
         </div>
 
         {type === 'weather' && (
-          <div className="mb-4">
-            <label className="block text-[12px] font-medium text-ink-600 mb-1.5">城市</label>
-            <input value={form.city} onChange={(e) => set('city', e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && run()}
-              className={inputCls} placeholder="如 西安" />
-          </div>
+          <>
+            <label className="block text-[12px] font-medium text-ink-600 mb-1.5">城市（可多个）</label>
+            <TagInput value={cities} onChange={setCities} placeholder="输入城市名后回车，如 西安" />
+            <CommonChips options={COMMON_CITIES} selected={cities} onToggle={toggleCommon} />
+          </>
         )}
 
         {type === 'flight' && (
-          <div className="grid grid-cols-3 gap-3 mb-4">
-            <div>
-              <label className="block text-[12px] font-medium text-ink-600 mb-1.5">航班号</label>
-              <input value={form.flight_number} onChange={(e) => set('flight_number', e.target.value)}
-                className={inputCls} placeholder="CA1234" />
+          <>
+            <label className="block text-[12px] font-medium text-ink-600 mb-1.5">航班号（可多个）</label>
+            <TagInput value={flights} onChange={setFlights} placeholder="输入航班号后回车，如 CA1234" />
+            <CommonChips options={COMMON_FLIGHTS} selected={flights} onToggle={toggleCommon} />
+            <div className="grid grid-cols-2 gap-3 mt-3">
+              <div>
+                <label className="block text-[12px] font-medium text-ink-600 mb-1.5">出发城市（可选）</label>
+                <input value={flightRoute.origin} onChange={(e) => setFlightRoute((r) => ({ ...r, origin: e.target.value }))}
+                  className={inputCls} placeholder="留空则由数据源补齐" />
+              </div>
+              <div>
+                <label className="block text-[12px] font-medium text-ink-600 mb-1.5">到达城市（可选）</label>
+                <input value={flightRoute.destination} onChange={(e) => setFlightRoute((r) => ({ ...r, destination: e.target.value }))}
+                  className={inputCls} placeholder="留空则由数据源补齐" />
+              </div>
             </div>
-            <div>
-              <label className="block text-[12px] font-medium text-ink-600 mb-1.5">出发城市</label>
-              <input value={form.origin} onChange={(e) => set('origin', e.target.value)}
-                className={inputCls} placeholder="西安" />
-            </div>
-            <div>
-              <label className="block text-[12px] font-medium text-ink-600 mb-1.5">到达城市</label>
-              <input value={form.destination} onChange={(e) => set('destination', e.target.value)}
-                className={inputCls} placeholder="北京" />
-            </div>
-          </div>
+          </>
         )}
 
         {type === 'train' && (
-          <div className="grid grid-cols-4 gap-3 mb-4">
-            <div>
-              <label className="block text-[12px] font-medium text-ink-600 mb-1.5">车次</label>
-              <input value={form.train_code} onChange={(e) => set('train_code', e.target.value)}
-                className={inputCls} placeholder="G102" />
+          <>
+            <label className="block text-[12px] font-medium text-ink-600 mb-1.5">车次（可多个）</label>
+            <TagInput value={trains} onChange={setTrains} placeholder="输入车次后回车，如 G102" />
+            <CommonChips options={COMMON_TRAINS} selected={trains} onToggle={toggleCommon} />
+            <div className="grid grid-cols-3 gap-3 mt-3">
+              <div>
+                <label className="block text-[12px] font-medium text-ink-600 mb-1.5">出发站</label>
+                <input value={trainCtx.train_from} onChange={(e) => setTrainCtx((c) => ({ ...c, train_from: e.target.value }))}
+                  className={inputCls} placeholder="广州南" />
+              </div>
+              <div>
+                <label className="block text-[12px] font-medium text-ink-600 mb-1.5">到达站</label>
+                <input value={trainCtx.train_to} onChange={(e) => setTrainCtx((c) => ({ ...c, train_to: e.target.value }))}
+                  className={inputCls} placeholder="北京西" />
+              </div>
+              <div>
+                <label className="block text-[12px] font-medium text-ink-600 mb-1.5">乘车日期</label>
+                <input type="date" value={trainCtx.train_date} onChange={(e) => setTrainCtx((c) => ({ ...c, train_date: e.target.value }))}
+                  className={inputCls} />
+              </div>
             </div>
-            <div>
-              <label className="block text-[12px] font-medium text-ink-600 mb-1.5">出发站</label>
-              <input value={form.train_from} onChange={(e) => set('train_from', e.target.value)}
-                className={inputCls} placeholder="广州南" />
-            </div>
-            <div>
-              <label className="block text-[12px] font-medium text-ink-600 mb-1.5">到达站</label>
-              <input value={form.train_to} onChange={(e) => set('train_to', e.target.value)}
-                className={inputCls} placeholder="北京西" />
-            </div>
-            <div>
-              <label className="block text-[12px] font-medium text-ink-600 mb-1.5">乘车日期</label>
-              <input type="date" value={form.train_date} onChange={(e) => set('train_date', e.target.value)}
-                className={inputCls} />
-            </div>
-          </div>
+            <p className="text-[11px] text-ink-400 mt-2">
+              出发点/到达站/日期三者填齐才走 12306 真实查询，否则降级为模拟数据。
+            </p>
+          </>
         )}
 
-        <div className="flex justify-end">
-          <Button type="primary" size="sm" loading={loading} onClick={run}>
-            <Search size={14} className="mr-1.5" /> 立即查询
-          </Button>
+        <div className="flex items-center justify-between gap-3 mt-4 pt-4" style={{ borderTop: '1px solid var(--line)' }}>
+          <span className="text-[12px] text-ink-400">
+            {canRun ? `将并行查询 ${current.length} 项` : '请先添加至少一项'}
+          </span>
+          <div className="flex items-center gap-2">
+            {rows.length > 0 && (
+              <Button type="secondary" size="sm" onClick={() => { setRows([]); setList([]); }}>
+                <X size={13} className="mr-1" /> 清空
+              </Button>
+            )}
+            <Button type="primary" size="sm" loading={loading} disabled={!canRun} onClick={run}>
+              <Search size={14} className="mr-1.5" /> 立即查询
+            </Button>
+          </div>
         </div>
       </Card>
 
-      {error && (
-        <div className="rounded-xl border border-red-100 bg-red-50 px-4 py-3 text-[13px] text-red-700 leading-relaxed">
-          {error}
-        </div>
-      )}
+      {rows.length > 0 && (
+        <div>
+          <ResultSummary
+            icon={type === 'weather' ? <Cloud size={15} className="text-primary-500" /> : type === 'flight' ? <Plane size={15} className="text-primary-500" /> : <TrainFront size={15} className="text-primary-500" />}
+            title={type === 'weather' ? '城市天气' : type === 'flight' ? '航班动态' : '车次状态'}
+            loading={loading}
+            total={rows.length}
+            done={doneCount}
+            failed={failedCount}
+            alertCount={alertCount}
+            mockAll={mockAll}
+            onRefresh={canRun ? run : undefined}
+          />
 
-      {result && (
-        <Card header="查询结果" headerIcon={<Zap size={15} />}>
-          <div className="flex items-center gap-2 mb-3">
-            <Badge tone="primary">{result.type}</Badge>
-            <span className="text-[11px] text-ink-400">实时直查 · 同步返回</span>
+          <div className={gridCls}>
+            {rows.map((r) => {
+              const pending = r.status === 'loading';
+              if (type === 'weather') {
+                return <WeatherCard key={r.key} city={r.label} data={r.data} loading={pending} error={r.error} />;
+              }
+              if (type === 'flight') {
+                return <FlightCard key={r.key} flightNumber={r.label} data={r.data} loading={pending} error={r.error} />;
+              }
+              return (
+                <TrainCard
+                  key={r.key}
+                  query={{
+                    train_code: r.label,
+                    train_from: trainCtx.train_from,
+                    train_to: trainCtx.train_to,
+                    train_date: trainCtx.train_date,
+                  }}
+                  data={r.data}
+                  loading={pending}
+                  error={r.error}
+                />
+              );
+            })}
           </div>
-          <ValueView value={result.data} />
-        </Card>
+
+          <details className="card p-4 mt-3">
+            <summary className="cursor-pointer text-[12px] text-ink-500 select-none">
+              查看原始返回（JSON）
+            </summary>
+            <div className="mt-3 space-y-3">
+              {rows.map((r) => (
+                <div key={r.key}>
+                  <div className="text-[11px] font-medium text-ink-500 mb-1">{r.label}</div>
+                  <pre className="text-[11px] leading-relaxed bg-gray-50 border border-gray-100 rounded-lg p-3 overflow-auto max-h-60 text-ink-700">
+                    {JSON.stringify(r.data ?? { error: r.error || '查询中' }, null, 2)}
+                  </pre>
+                </div>
+              ))}
+            </div>
+          </details>
+        </div>
       )}
     </div>
   );
 }
 
-function ValueView({ value, depth = 0 }) {
-  if (value === null || value === undefined) return <span className="text-ink-400">—</span>;
-
-  if (Array.isArray(value)) {
-    if (!value.length) return <span className="text-ink-400">空</span>;
-    return (
-      <div className="space-y-1.5">
-        {value.slice(0, 12).map((it, i) => (
-          <div key={i} className="rounded-lg border border-gray-100 bg-gray-50/60 px-3 py-2">
-            <ValueView value={it} depth={depth + 1} />
-          </div>
-        ))}
-      </div>
-    );
-  }
-
-  if (typeof value === 'object') {
-    return (
-      <div className="space-y-1.5">
-        {Object.entries(value).map(([k, v]) => (
-          <div key={k} className="flex gap-3 text-[12px] items-start">
-            <span className="text-ink-400 w-[110px] shrink-0 pt-0.5">{k}</span>
-            <span className="text-ink-900 flex-1 min-w-0 break-words">
-              <ValueView value={v} depth={depth + 1} />
-            </span>
-          </div>
-        ))}
-      </div>
-    );
-  }
-
-  return <span>{String(value)}</span>;
+/** 常用值快捷 chips：一点加入，再点移除 */
+function CommonChips({ options, selected, onToggle }) {
+  return (
+    <div className="flex flex-wrap items-center gap-1.5 mt-2.5">
+      <span className="text-[11px] text-ink-400">常用：</span>
+      {options.map((v) => {
+        const on = selected.includes(v);
+        return (
+          <button
+            key={v}
+            type="button"
+            onClick={() => onToggle(v)}
+            className={`px-2 py-0.5 rounded-full text-[11px] border transition-colors ${
+              on
+                ? 'bg-primary-50 text-primary-700 border-primary-200 font-medium'
+                : 'bg-white text-ink-500 border-gray-200 hover:border-primary-300'
+            }`}
+          >
+            {v}
+          </button>
+        );
+      })}
+    </div>
+  );
 }

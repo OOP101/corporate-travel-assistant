@@ -24,6 +24,16 @@ JOURNEY_DIR = os.path.join(ROOT, "services", "journey-hub")
 CHIP_TEXT = "你看着办，按常见差旅默认补全"
 
 
+@pytest.fixture(autouse=True)
+def _clear_decision_cache():
+    """语义判定带 LRU 缓存；测试间必须清空，否则同文本会互相串结论。"""
+    from shared.decision import clear_cache
+
+    clear_cache()
+    yield
+    clear_cache()
+
+
 class _NullLLM:
     """LLM 不可用：抽取完全走显式参数 / carry / 规则，确定性可断言（不打网络）。"""
 
@@ -174,3 +184,105 @@ def test_cap_hit_keeps_carry_for_recovery(graph_mod):
 
     carry = hub.sessions.get_metadata("carry-session", "plan_carry") or {}
     assert carry.get("scene") == "personal", f"已抽到的场景须保留在 carry；实际 {carry}"
+
+
+# ---------------------------------------------------------------------------
+# 根因 1 加强：正则必漏的同义授权用语，交给类型化判定（shared/decision）兜底
+# ---------------------------------------------------------------------------
+class _StubDecision:
+    """假决策客户端：按预设概率回一个 noul 答案，并记录调用次数（不碰网络）。"""
+
+    def __init__(self, probability, available=True):
+        self.probability = probability
+        self.available = available
+        self.calls = 0
+
+    def is_available(self):
+        return self.available
+
+    def system_one(self, state, questions, model=None, timeout=None):
+        from shared.decision import DecisionResponse, NoulAnswer
+
+        self.calls += 1
+        return DecisionResponse(
+            model="stub", answers={next(iter(questions)): NoulAnswer(noul=self.probability)}
+        )
+
+
+PARAPHRASE = "不用问我了"  # 正则覆盖不到，但语义上就是授权
+
+
+def test_semantic_fallback_catches_paraphrase(itin):
+    """正则漏掉的同义授权用语：有决策客户端时能兜住，没有时行为与旧版一致。"""
+    assert itin.is_autofill_authorized(PARAPHRASE) is False, "不传客户端必须保持纯正则行为"
+    stub = _StubDecision(0.92)
+    assert itin.is_autofill_authorized(PARAPHRASE, stub) is True
+    assert stub.calls == 1
+    # 正则命中的话连判定都不该发起（快路径零成本）
+    assert itin.is_autofill_authorized("你看着办", stub) is True
+    assert stub.calls == 1
+
+
+def test_semantic_fallback_respects_uncertainty(itin):
+    """模型没把握时不代填 —— 继续澄清，总好过擅自替用户定行程。"""
+    assert itin.is_autofill_authorized(PARAPHRASE, _StubDecision(0.6)) is False
+    assert itin.is_autofill_authorized(PARAPHRASE, _StubDecision(0.05)) is False
+
+
+def test_semantic_fallback_survives_dead_client(itin):
+    """决策层不可用/抛异常 ⇒ 退回纯正则，绝不能把主流程拖崩。"""
+    class _Dead(_StubDecision):
+        def system_one(self, *a, **kw):
+            raise RuntimeError("decision backend down")
+
+    assert itin.is_autofill_authorized(PARAPHRASE, _StubDecision(0.9, available=False)) is False
+    assert itin.is_autofill_authorized(PARAPHRASE, _Dead(0.9)) is False
+
+
+def test_generator_gates_semantic_check_to_short_clarify_replies(itin, monkeypatch):
+    """三重门控：首轮（carry 空）与长句都不发起判定；澄清回合的短回答才发起。
+
+    语义兜底默认关闭（单次判定实测 ~2.7s，见 scripts/probe_decision.py），
+    这里显式打开开关来验证门控逻辑本身。
+    """
+    monkeypatch.setattr(itin, "_SEMANTIC_AUTOFILL_ENABLED", True)
+    stub = _StubDecision(0.9)
+    gen = itin.ItineraryGenerator(llm_manager=_NullLLM(), guide_store=None, decision=stub)
+
+    # 首轮：carry 为空 → 不是澄清回合，不判定
+    gen._extract_params(PARAPHRASE, {}, explicit={"scene": "personal"}, carry={})
+    assert stub.calls == 0, "首轮完整需求不该付这次往返成本"
+
+    # 长句：自带明确信息，不判定
+    long_text = "我想下个月十号前后去一趟成都顺便看看熊猫基地安排三天时间"
+    gen._extract_params(long_text, {}, explicit={"scene": "personal"}, carry={"scene": "personal"})
+    assert stub.calls == 0, "长句不判定"
+
+    # 澄清回合的短回答：判定，且命中后日期/天数按规则补上
+    params, missing, defaulted = gen._extract_params(
+        PARAPHRASE, {}, explicit={"scene": "personal"}, carry={"scene": "personal"}
+    )
+    assert stub.calls == 1
+    assert params["start_date"] and params["days"] == itin.AUTH_DEFAULT_DAYS["personal"]
+    assert {"start_date", "days"} <= {d["field"] for d in defaulted}
+    assert missing == ["destination"], f"目的地无代填规则，仍应缺参；实际 {missing}"
+
+
+def test_semantic_check_off_by_default(itin):
+    """默认不给澄清路径加延迟：开关未打开时，即使有可用客户端也不发起判定。"""
+    stub = _StubDecision(0.9)
+    gen = itin.ItineraryGenerator(llm_manager=_NullLLM(), guide_store=None, decision=stub)
+    assert itin._SEMANTIC_AUTOFILL_ENABLED is False
+    gen._extract_params(PARAPHRASE, {}, explicit={"scene": "personal"}, carry={"scene": "personal"})
+    assert stub.calls == 0
+
+
+def test_generator_can_disable_semantic_check(itin):
+    """显式 decision=None 即关闭语义判定（回到纯正则）。"""
+    gen = itin.ItineraryGenerator(llm_manager=_NullLLM(), guide_store=None, decision=None)
+    _, missing, defaulted = gen._extract_params(
+        PARAPHRASE, {}, explicit={"scene": "personal"}, carry={"scene": "personal"}
+    )
+    # 备注里带「授权代填」的条目只能来自授权分支（人数/交通等属于另一套常量代填）
+    assert not [d for d in defaulted if "授权代填" in d.get("note", "")], defaulted
+    assert set(missing) == {"destination", "start_date", "days"}

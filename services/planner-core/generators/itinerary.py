@@ -16,12 +16,14 @@
 """
 import json
 import logging
+import os
 import re
 import time
 from datetime import date, datetime, timedelta
 from typing import Generator, Optional
 
 from shared.llm import LLMManager, parse_json_tolerant
+from shared.decision import DecisionClient, NoulCriteria, ask_noul
 from shared.config import settings
 from shared.embedding import get_embedder
 from shared.geo import TencentMapClient, QWeatherClient
@@ -180,10 +182,65 @@ _AUTOFILL_AUTH_RE = re.compile(
 AUTH_DEFAULT_DAYS = {"business": 2, "meeting": 3, "visit": 2, "team": 2, "personal": 3}
 AUTH_DEFAULT_DAYS_FALLBACK = 2
 
+# 语义兜底：正则必漏 —— 用户完全可能换一种说法表达同一件事（「不用问我了」
+# 「你帮我定就行」「按你说的来」）。这类漏判的代价是澄清死循环（用户越点越出不来），
+# 所以补一层类型化判定（shared/decision）：问一句「这是不是在授权代填」。
+# 只在**澄清回合的短回答**上启用，见 ItineraryGenerator._semantic_decision ——
+# 首轮完整需求句不付这次往返成本。
+AUTOFILL_SEMANTIC_INSTRUCTIONS = (
+    "用户正在回答一个行程规划的澄清提问（助手此前已告知缺少出发日期/天数等信息）。"
+    "判断这句话是否在表达「不用再问我了，由你自行决定、按常见差旅默认补全」的授权。"
+    "只要句子里出现了具体的出发日期、天数、目的地、人数或预算，就必须判为否——"
+    "那是在补充信息，不是在授权代填。"
+)
+AUTOFILL_SEMANTIC_CRITERIA = NoulCriteria(
+    true="把决定权交给助手、且没有补充任何具体信息，如「你看着办」「你帮我定」「按你说的来」「别问我了」",
+    false="补了具体出行信息（日期/天数/目的地/人数/预算）；或在追问、质疑、寒暄；或表示取消行程",
+)
+# 判「是」的概率门槛：低于 0.75 宁可维持旧行为（继续澄清），不硬猜
+AUTOFILL_SEMANTIC_THRESHOLD = 0.75
+# 超过这个长度就不像澄清回合的短回答，不再发起语义判定
+AUTOFILL_SEMANTIC_MAX_CHARS = 24
+# 急停开关：默认关闭（DECISION_SEMANTIC_AUTOFILL=1 开启）。
+# 依据 scripts/probe_decision.py 实测（2026-09-24，deepseek-v4-flash）：
+#   * 判据收紧后准确率 10/10、零误判 —— 兜住了「不用问我了 / 你帮我定就行 /
+#     这些你拿主意吧 / 按你说的来」4 例正则漏判，也没有误伤「下周三去深圳出差 3 天」
+#     这类补充信息的正常回答；
+#   * 但单次判定平均 ~2.7 秒（uncached），而 UI 那枚按钮的原话正则本就命中。
+# 结论：能力可用，默认不启用 —— 不给每轮澄清都加 2.7 秒，需要时一个环境变量开。
+_SEMANTIC_AUTOFILL_ENABLED = os.getenv("DECISION_SEMANTIC_AUTOFILL", "0").strip().lower() in (
+    "1", "true", "yes", "on",
+)
 
-def is_autofill_authorized(text: str) -> bool:
-    """用户是否显式授权「按常见差旅默认补全」（PRD §6.3：随便/你看着办 = 跳过澄清）。"""
-    return bool(_AUTOFILL_AUTH_RE.search(str(text or "")))
+
+def is_autofill_authorized(text: str, decision=None, *, threshold: float = AUTOFILL_SEMANTIC_THRESHOLD) -> bool:
+    """用户是否显式授权「按常见差旅默认补全」（PRD §6.3：随便/你看着办 = 跳过澄清）。
+
+    两级判定，**纯增益**：
+      1. 关键词正则快路径——命中即返回，零延迟、确定性可断言（默认行为不变）；
+      2. 未命中且传入 `decision` 客户端时，补一次类型化判定（System One 范式），
+         只有模型以不低于 `threshold` 的把握判「是」才算授权。
+    不传 `decision`（或客户端不可用/判定失败/落在不确定带）→ 一律 `False`，
+    即完全等同于改造前的纯正则行为。
+    """
+    if _AUTOFILL_AUTH_RE.search(str(text or "")):
+        return True
+    if decision is None:
+        return False
+    got = ask_noul(
+        decision,
+        state=str(text or ""),
+        instructions=AUTOFILL_SEMANTIC_INSTRUCTIONS,
+        criteria=AUTOFILL_SEMANTIC_CRITERIA,
+        default=None,  # 不确定 → 维持旧行为（继续澄清），不擅自代填
+        threshold=threshold,
+        question_name="autofill_authorized",
+    )
+    return got is True
+
+
+# 默认按 LLMManager 自建决策客户端；显式传 None 关闭，传实例注入桩（测试）
+_AUTO_DECISION = object()
 
 
 class ItineraryGenerator:
@@ -197,11 +254,16 @@ class ItineraryGenerator:
         trip_dict = gen.generate("下周末去杭州玩两天，两大一小")
     """
 
-    def __init__(self, llm_manager: LLMManager, guide_store=None):
+    def __init__(self, llm_manager: LLMManager, guide_store=None, decision=_AUTO_DECISION):
         self.llm = llm_manager
         self.model: Optional[str] = None  # 前端选择的模型（可选，缺省用注册配置）
         # 景点/攻略语料库（可选）。仅个人出游场景用于 RAG 召回，注入生成提示词。
         self.guide_store = guide_store
+        # 类型化决策客户端（shared/decision）：只用于澄清回合的语义授权兜底。
+        # 传实例 = 注入桩（测试）；传 None = 显式关闭语义判定；缺省 = 按 LLMManager 自建。
+        if decision is _AUTO_DECISION:
+            decision = DecisionClient(llm_manager) if llm_manager is not None else None
+        self.decision = decision
         # 埋点：每个阶段耗时 + LLM 调用统计，由 API 层在 SSE done 帧前发出 timing 帧
         self._phase_timings: dict = {}
         self._last_guides: list = []
@@ -692,6 +754,23 @@ class ItineraryGenerator:
     # ------------------------------------------------------------------
     # 内部: 提取与生成
     # ------------------------------------------------------------------
+    def _semantic_decision(self, query: str, carry: dict):
+        """决定这次是否值得付一次类型化判定；返回决策客户端或 None。
+
+        三重门控（缺一不可），把成本压在「本来就要出问题的那条路径」上：
+          1. `carry` 非空 —— 说明这是澄清回合的追问回答（首轮完整需求句不触发）；
+          2. 回答足够短（≤ AUTOFILL_SEMANTIC_MAX_CHARS）—— 长句自会带上明确信息；
+          3. 正则未命中 —— 命中了就是零成本快路径，没必要再问模型。
+        """
+        if not _SEMANTIC_AUTOFILL_ENABLED or self.decision is None or not carry:
+            return None
+        text = str(query or "").strip()
+        if not text or len(text) > AUTOFILL_SEMANTIC_MAX_CHARS:
+            return None
+        if _AUTOFILL_AUTH_RE.search(text):
+            return None
+        return self.decision
+
     def _extract_params(self, query: str, preferences: dict, explicit: dict = None, carry: dict = None):
         """v2 参数提取：LLM 抽取 → 显式参数合并 → 澄清轮次参数续用 → 缺参判定 → 可代填兜底。
 
@@ -753,8 +832,9 @@ class ItineraryGenerator:
         # 0) 授权代填（PRD §6.3）：「你看着办 / 随便」= 用户显式授权跳过澄清。
         #    必须放在缺参判定「之前」补日期与天数——否则用户点一次该入口，缺参清单
         #    原样重现、又生成同样一句反问，形成死循环（dest 无法规则代填，仍需追问）。
+        #    判定两级：关键词正则（快、确定）→ 澄清回合短回答上的类型化语义兜底。
         defaulted = []
-        if is_autofill_authorized(query):
+        if is_autofill_authorized(query, self._semantic_decision(query, carry)):
             if not params.get("start_date"):
                 params["start_date"] = (date.today() + timedelta(days=1)).strftime("%Y-%m-%d")
                 defaulted.append({
