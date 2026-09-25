@@ -7,12 +7,12 @@
  * 方案（与 TripsPage 的 generationStore 同一套路）：
  *  - 对话消息放在模块级单例，流式请求在模块作用域持续，不被卸载打断；
  *  - localStorage 快照持久化，刷新页面也能恢复最近对话；
- *  - 首次进入且无本地快照时，回放 journey-hub 服务端会话历史兜底。
+ *  - 首次进入且无本地快照时，回放服务端会话历史兜底。
  */
 import { chatStream, clearSession, getSessionHistory, confirmTripPlan } from '../api/journey';
 import { currentUserId } from '../api/auth';
 
-// 会话 ID 即登录用户名 —— 与 planner 侧 resolve_user_id 同一口径，
+// 会话 ID 即登录用户名 —— 与后端 resolve_user_id 同一口径，
 // 服务端历史、行程归属、画像三者才不会各认各的。
 const SESSION_ID = currentUserId();
 const LS_KEY = `cjh_chat_${SESSION_ID}`;

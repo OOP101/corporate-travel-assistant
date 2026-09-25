@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 from .auth import require_admin
 from shared.store.base_store import BaseJsonStore
 
-logger = logging.getLogger("journey-hub.admin")
+logger = logging.getLogger("core.admin")
 
 router = APIRouter(tags=["系统管理"])
 

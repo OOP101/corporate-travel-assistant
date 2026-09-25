@@ -1,6 +1,6 @@
 """行程生成管线 —— 「自然语言 → 草案」的进程内流水线（v3）
 
-从 v2 planner-core 的 /trips/generate SSE 端点抽出：HTTP 端点与 Agent 工具
+从 v2 规划服务的 /trips/generate SSE 端点抽出：HTTP 端点与 Agent 工具
 （plan_trip_stream）共用同一条管线，消除「编排层经 HTTP 回调自身」的绕路。
 
 产出帧统一用 {"kind": ...}：

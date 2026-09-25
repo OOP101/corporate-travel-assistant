@@ -35,7 +35,7 @@ from shared.models import (
 from .template import build_trip_from_template
 from .fast_extract import fast_covers_required, fast_extract_params
 
-logger = logging.getLogger("planner-core.generators.itinerary")
+logger = logging.getLogger("core.generation.itinerary")
 
 
 # ---------------------------------------------------------------------------

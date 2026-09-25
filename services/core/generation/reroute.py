@@ -16,7 +16,7 @@ from typing import Dict, Any, List, Optional
 
 from shared.llm import LLMManager
 
-logger = logging.getLogger("planner-core.generators.reroute")
+logger = logging.getLogger("core.generation.reroute")
 
 
 def _to_minutes(time_str: str) -> int:

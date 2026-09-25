@@ -1,7 +1,7 @@
 """工具处理器 —— Agent 每个工具的进程内执行逻辑（v3 重写）
 
-v2 的问题：编排层（journey-hub）经 HTTP 回调 planner-core / sense-engine，
-同进程绕一圈网络，还带来三服务同名 `api` 包的别名加载复杂度。
+v2 的问题：编排层经 HTTP 回调独立的规划服务 / 感知服务，
+同进程绕一圈网络，还带来多个同名 `api` 包的别名加载复杂度。
 
 v3：Agent 是内核，业务能力皆外接服务——全部进程内直调：
   plan_trip_stream → core.agent.pipeline（生成管线）

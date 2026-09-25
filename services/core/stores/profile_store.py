@@ -14,7 +14,7 @@ import os
 import time
 from typing import Dict, List, Optional
 
-logger = logging.getLogger("planner-core.store")
+logger = logging.getLogger("core.store.profile")
 
 
 # 默认画像字段 (与 PreferenceProfile 对齐)

@@ -13,7 +13,7 @@ import time
 import uuid
 from typing import Dict, List, Optional
 
-logger = logging.getLogger("planner-core.store")
+logger = logging.getLogger("core.store.trip")
 
 
 class TripStore:

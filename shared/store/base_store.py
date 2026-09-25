@@ -12,7 +12,7 @@ import time
 import uuid
 from typing import Dict, List, Optional, Any
 
-logger = logging.getLogger("planner-core.store")
+logger = logging.getLogger("shared.store.base")
 
 
 class BaseJsonStore:

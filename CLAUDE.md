@@ -57,9 +57,9 @@
 │   ├── config/               # 配置管理
 │   └── middleware/            # 中间件
 ├── services/
-│   ├── journey-hub/          # Agent 编排中心 (8001)
-│   ├── planner-core/         # 行程规划引擎 (8002)
-│   └── sense-engine/         # 实时感知引擎 (8003)
+│   ├── core/                 # Agent 内核 · 单服务单端口 (8001)
+│   ├── policy_service/       # 政策服务（规则 + RAG）
+│   └── guide_service/        # 攻略服务（RAG）
 ├── frontend/                 # React 前端 (3001)
 │   ├── src/
 │   │   ├── components/       # 共享组件库
@@ -92,14 +92,14 @@
 ## 运行命令
 
 ```bash
-# 后端启动
-python scripts/start_local.py
+# 后端启动（单服务内核 · 单端口 8001）
+python launcher.py
 
 # 前端启动
 cd frontend && npm run dev
 
-# 后端测试
-cd services/planner-core && pytest
+# 后端测试（仓库根目录执行）
+.venv/Scripts/python.exe -m pytest --basetemp=./.pytest_tmp -q
 
 # 前端 lint
 cd frontend && npm run lint

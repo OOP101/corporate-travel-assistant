@@ -3,8 +3,8 @@
 设计：
 - 用户存 JSON（pbkdf2-sha256 口令哈希，旧 sha256+salt 记录仍可验证并自动升级），
   启动时种子管理员账号
-- Token 为 HMAC 签名的无状态串（24h 过期）：服务重启不掉线；planner-core 持有
-  同一 SESSION_SECRET 即可离线校验，无需回调本服务
+- Token 为 HMAC 签名的无状态串（24h 过期）：服务重启不掉线；任何持有
+  同一 SESSION_SECRET 的进程都能离线校验，无需回调本服务
 - 前端请求带 Authorization: Bearer <token>；管理接口额外校验 admin 角色
 - 注册开放（自助注册）：用户名与已有账号及种子员工重名一律拒绝
 """
@@ -21,7 +21,7 @@ from shared.config import settings
 from shared.middleware.session import SignedSession
 from shared.store.base_store import BaseJsonStore
 
-logger = logging.getLogger("journey-hub.auth")
+logger = logging.getLogger("core.auth")
 
 TOKEN_TTL_SECONDS = 24 * 3600
 
@@ -139,8 +139,8 @@ def require_admin(request: Request) -> dict:
 def resolve_session_id(request: Request, fallback: str = "default") -> str:
     """会话 / 用户身份：登录态优先（Bearer → username），未登录沿用调用方给的值。
 
-    登录态贯穿的起点：journey 把它当作 session_id 转发给 planner-core，
-    planner 侧在无 Bearer（服务间调用只带 X-API-Key）时认这个值。
+    登录态贯穿的起点：本服务把它当作 session_id 落到行程与审批的归属字段上，
+    同一进程内的调用方在无 Bearer 时也认这个值。
     """
     auth_header = request.headers.get("Authorization", "")
     token = auth_header[7:].strip() if auth_header.startswith("Bearer ") else ""

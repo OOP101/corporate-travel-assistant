@@ -5,8 +5,8 @@
     from shared.http_client import ServiceClient
 
     client = ServiceClient()
-    result = client.get("http://planner-core:8002/trips")
-    result = client.post("http://planner-core:8002/trips/generate", json={"query": "..."})
+    result = client.get("http://127.0.0.1:8001/trips")
+    result = client.post("http://127.0.0.1:8001/trips/generate", json={"query": "..."})
 """
 import json as _json
 import logging

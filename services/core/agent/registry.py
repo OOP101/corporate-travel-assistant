@@ -2,16 +2,16 @@
 工具注册表 —— Agent 可用的全部工具
 
 工具分类：
-  1. plan_trip   → 调用 planner-core 生成行程
+  1. plan_trip   → 调生成管线产出行程草案
   2. chat_query  → 用 LLM 回答旅行相关问题
-  3. manage_trip → 调用 planner-core 管理行程
+  3. manage_trip → 直读直写行程存储
 
 所有工具均通过 ToolRegistry 统一注册与调度。
 """
 import logging
 from typing import Dict, Any, Callable, List
 
-logger = logging.getLogger("journey-hub.tools")
+logger = logging.getLogger("core.agent.registry")
 
 
 class ToolResult:

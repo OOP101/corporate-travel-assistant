@@ -29,7 +29,7 @@ import os
 import re
 from typing import Any, Dict, Optional, Tuple
 
-logger = logging.getLogger("journey-hub.mcp-map")
+logger = logging.getLogger("core.agent.mcp-map")
 
 DEFAULT_MCP_URL = "https://mcp.map.qq.com/sse"
 _CALL_TIMEOUT = 30  # 秒，含 SSE 握手（路线查询 = 两段 geocode 并行 + 一次路线工具）

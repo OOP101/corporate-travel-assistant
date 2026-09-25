@@ -557,7 +557,7 @@ def reset_chat_history(mode: str = DEFAULT_MODE):
     """启动时清掉上一次的对话记录（服务端会话历史），行程等一概保留。
 
     前端那半（localStorage 快照）由工作台 URL 的 ?fresh=1 负责；
-    这里负责服务端：清空 journey-hub 的 SessionManager 内存历史。
+    这里负责服务端：清空 core 的 SessionManager 内存历史。
     服务不可用 / 鉴权失败时静默跳过 —— 对话清不掉不该挡住启动。
     """
     try:

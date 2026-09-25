@@ -10,7 +10,7 @@ from typing import List
 
 from shared.llm import LLMManager
 
-logger = logging.getLogger("planner-core.archive.summary")
+logger = logging.getLogger("core.archive.summary")
 
 
 class SummaryGenerator:

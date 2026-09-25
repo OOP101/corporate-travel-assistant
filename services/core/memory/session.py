@@ -8,7 +8,7 @@ import logging
 from typing import List, Dict, Optional
 from dataclasses import dataclass, field
 
-logger = logging.getLogger("journey-hub.session")
+logger = logging.getLogger("core.memory.session")
 
 
 @dataclass

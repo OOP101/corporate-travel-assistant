@@ -1,9 +1,9 @@
 """无状态签名会话 Token —— 跨服务可验证的登录态
 
-为什么需要：登录由 journey-hub 签发，但用户级数据（画像 / 行程 / 模板）由
-planner-core 持有。若 token 只存签发进程的内存，planner 无从验证，且服务一重启
-全体掉线。改为 HMAC 签名的自包含 token 后，任何持有同一 SESSION_SECRET 的进程
-都能离线校验——单体模式天然满足，微服务模式各进程读同一份 .env 即可。
+为什么需要：v2 里登录由编排服务签发、用户级数据（画像 / 行程 / 模板）却在规划服务，
+若 token 只存签发进程的内存，另一侧无从验证，且服务一重启全体掉线。
+改为 HMAC 签名的自包含 token 后，任何持有同一 SESSION_SECRET 的进程都能离线校验
+——v3 单服务天然满足，将来拆进程只要各进程读同一份 .env 即可。
 
 格式：base64url(json_payload) . base64url(hmac_sha256(payload_b64, secret))
 base64url 字母表不含 "."，故用它做分隔符不会歧义。

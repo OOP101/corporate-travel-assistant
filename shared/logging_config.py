@@ -3,7 +3,7 @@
 
 用法:
     from shared.logging_config import setup_logging
-    setup_logging(level="INFO", service="journey-hub")
+    setup_logging(level="INFO", service="core")
 """
 import logging
 import sys

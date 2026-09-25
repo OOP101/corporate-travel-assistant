@@ -10,7 +10,7 @@ from typing import List
 
 from shared.llm import LLMManager
 
-logger = logging.getLogger("planner-core.generators.checklist")
+logger = logging.getLogger("core.generation.checklist")
 
 
 class ChecklistGenerator:

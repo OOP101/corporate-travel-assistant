@@ -73,7 +73,7 @@ globs:
 
 ### 关键目录
 - shared/ - 平台复用层
-- services/ - 微服务（journey-hub, planner-core, sense-engine）
+- services/ - core Agent 内核（8001）+ 两个外接服务（政策 / 攻略）
 - frontend/src/components/ - 共享组件库
 
 ---
