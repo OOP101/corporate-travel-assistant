@@ -1,9 +1,9 @@
 """
-偏好画像存储 —— 策程 · Planner Core
+偏好画像存储 —— Agent 内核 · 用户画像持久化
 
 内存存储 + JSON 文件持久化。
 - 启动时从 data_dir 加载所有 .json 画像文件到内存。
-- 每次 save/update/delete 同步写盘。
+- 每次 save/update/add_companion 同步写盘，写盘为原子操作（temp + os.replace）。
 - 适合单实例演示；多实例需替换为数据库实现。
 
 数据结构遵循 shared.models.PreferenceProfile。
@@ -11,8 +11,11 @@
 import json
 import logging
 import os
+import threading
 import time
 from typing import Dict, List, Optional
+
+from shared.store.base_store import atomic_write_json
 
 logger = logging.getLogger("core.store.profile")
 
@@ -44,6 +47,8 @@ class ProfileStore:
     def __init__(self, data_dir: str = "./data/profiles"):
         self.data_dir = data_dir
         self._profiles: Dict[str, dict] = {}  # user_id → profile dict
+        # 进程内写锁：内存改动与写盘互斥（uvicorn 线程池并发跑 sync 端点）
+        self._lock = threading.RLock()
 
         os.makedirs(self.data_dir, exist_ok=True)
         self._load()
@@ -85,8 +90,9 @@ class ProfileStore:
         else:
             merged["budget_daily_range"] = list(_DEFAULT_PROFILE["budget_daily_range"])
 
-        self._profiles[user_id] = merged
-        self._persist(user_id, merged)
+        with self._lock:
+            self._profiles[user_id] = merged
+            self._persist(user_id, merged)
         logger.info(f"偏好画像已保存: {user_id}")
         return merged
 
@@ -107,8 +113,9 @@ class ProfileStore:
         current["user_id"] = user_id
         current["updated_at"] = time.time()
 
-        self._profiles[user_id] = current
-        self._persist(user_id, current)
+        with self._lock:
+            self._profiles[user_id] = current
+            self._persist(user_id, current)
         logger.info(f"偏好画像已更新: {user_id}")
         return current
 
@@ -128,8 +135,9 @@ class ProfileStore:
         companions.append(companion)
         profile["companions"] = companions
         profile["updated_at"] = time.time()
-        self._profiles[user_id] = profile
-        self._persist(user_id, profile)
+        with self._lock:
+            self._profiles[user_id] = profile
+            self._persist(user_id, profile)
         logger.info(f"同行人已添加: {user_id} → {companion.get('name', '')}")
         return profile
 
@@ -137,13 +145,9 @@ class ProfileStore:
     # 持久化
     # ------------------------------------------------------------------
     def _persist(self, user_id: str, profile: dict):
-        """将单条画像写入 JSON 文件 (文件名 = user_id.json)。"""
+        """将单条画像原子写入 JSON 文件（文件名 = user_id.json）。"""
         file_path = os.path.join(self.data_dir, f"{user_id}.json")
-        try:
-            with open(file_path, "w", encoding="utf-8") as f:
-                json.dump(profile, f, ensure_ascii=False, indent=2)
-        except OSError as e:
-            logger.error(f"偏好画像持久化失败 {user_id}: {e}")
+        atomic_write_json(file_path, profile, logger_=logger, what=f"偏好画像 {user_id}")
 
     def _load(self):
         """启动时加载目录下所有 JSON 画像文件。"""

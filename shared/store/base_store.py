@@ -15,6 +15,38 @@ from typing import Dict, List, Optional, Any
 logger = logging.getLogger("shared.store.base")
 
 
+def atomic_write_json(path: str, payload: Any, *, logger_: Optional[logging.Logger] = None,
+                      what: str = "") -> bool:
+    """原子写 JSON 文件：先写同目录临时文件，再 os.replace 覆盖目标。
+
+    为什么必须这样写：直接 open(path, "w") + json.dump 的窗口期内进程被中断
+    （被 kill / 断电 / 磁盘满），目标文件会停在半截，原数据随之损坏且无法解析。
+    os.replace 在同一文件系统内是原子操作，所以目标要么是旧内容、要么是完整新内容。
+
+    返回值：True 成功 / False 失败（失败已记日志，不抛异常，不阻断主流程）。
+    """
+    log = logger_ or logger
+    tmp_path = None
+    try:
+        # 临时文件必须与目标同目录，否则跨盘 os.replace 失去原子性
+        fd, tmp_path = tempfile.mkstemp(dir=os.path.dirname(path) or ".", suffix=".tmp")
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+        os.replace(tmp_path, path)
+        tmp_path = None
+        return True
+    except (OSError, TypeError, ValueError) as e:
+        log.error(f"{what or path} 持久化失败: {e}")
+        return False
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+
+
+
 class BaseJsonStore:
     """
     JSON 持久化存储基类。
@@ -112,21 +144,10 @@ class BaseJsonStore:
         """将单条记录原子写入 JSON 文件（temp 文件 + os.replace，崩溃不损坏已有数据）。"""
         entity_id = entity.get(self._id_field, "unknown")
         file_path = os.path.join(self.data_dir, f"{entity_id}.json")
-        tmp_path = None
-        try:
-            fd, tmp_path = tempfile.mkstemp(dir=self.data_dir, suffix=".tmp")
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(entity, f, ensure_ascii=False, indent=2)
-            os.replace(tmp_path, file_path)
-            tmp_path = None
-        except OSError as e:
-            logger.error(f"{self.__class__.__name__} 持久化失败 {entity_id}: {e}")
-        finally:
-            if tmp_path and os.path.exists(tmp_path):
-                try:
-                    os.remove(tmp_path)
-                except OSError:
-                    pass
+        atomic_write_json(
+            file_path, entity,
+            logger_=logger, what=f"{self.__class__.__name__} {entity_id}",
+        )
 
     def _load(self):
         """启动时加载目录下所有 JSON 文件。"""

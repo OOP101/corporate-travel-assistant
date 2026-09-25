@@ -23,10 +23,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 EXE = ROOT / "CorporateJourneyHub.exe"
 
+# v3 单服务内核：只有一个进程、一个端口。旧 journey/planner/sense 三服务已随切型删除。
 SERVICES = {
-    "journey": ("行智 · Journey Hub", 8001),
-    "planner": ("策程 · Planner Core", 8002),
-    "sense": ("感知 · Sense Engine", 8003),
+    "core": ("企业智行 · Agent 内核", 8001),
 }
 
 
@@ -97,7 +96,8 @@ def build_exe():
 
 def start_services():
     step("3/启动服务（加载已修复的代码）")
-    r = run([venv_python(), "scripts/start_local.py"], capture_output=True, text=True)
+    # 走 launcher：v2 的 scripts/start_local.py 已随切型删除
+    r = run([venv_python(), "launcher.py"], capture_output=True, text=True)
     log(r.stdout or "")
     if r.returncode != 0:
         log(f"[启动输出-错误]\n{r.stderr or ''}")

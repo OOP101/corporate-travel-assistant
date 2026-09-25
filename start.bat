@@ -1,7 +1,7 @@
 @echo off
 rem Corporate Journey Hub - one-click start (auto-closes when services are up)
-rem Default: single mode - all 3 services run in ONE process, port 8001.
-rem Add "micro" for 3-port mode (8001/8002/8003).
+rem Default: single core service - one process, one port 8001.
+rem "micro" is a retired alias (same behaviour as default); no 8002/8003 ports exist.
 rem Add "fresh" to clear previous trips/logs before starting.
 rem Stop: double-click the stop script (stop.bat equivalent).
 title Corporate Journey Hub - Start
