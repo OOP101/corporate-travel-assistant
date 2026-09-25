@@ -1,4 +1,4 @@
-import { ReactNode, useState } from 'react';
+import { useState } from 'react';
 
 export interface TabProps {
   tabs: Array<{ label: string; value: string }>;

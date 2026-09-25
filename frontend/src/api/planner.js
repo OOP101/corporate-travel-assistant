@@ -55,7 +55,7 @@ export async function getTripExportHtml(tripId) {
   return res.text();
 }
 
-// --- 用户画像 ---
+// --- 用户画像（「我的档案」页；后端 core/api/profile.py）---
 export async function getProfile() {
   return get('/api/planner/users/me/profile');
 }
@@ -70,31 +70,6 @@ export async function rerouteTrip(tripId, changedActivity, reason = '') {
     changed_activity: changedActivity,
     reason,
   });
-}
-
-// --- 模板（全套）---
-export async function listTemplates(tags = '') {
-  const qs = tags ? `?tags=${encodeURIComponent(tags)}` : '';
-  return get(`/api/planner/templates${qs}`);
-}
-
-export async function getTemplate(templateId) {
-  return get(`/api/planner/templates/${templateId}`);
-}
-
-export async function saveTripAsTemplate(tripId, templateName, tags = []) {
-  return post(`/api/planner/trips/${tripId}/template`, {
-    template_name: templateName,
-    tags,
-  });
-}
-
-export async function applyTemplate(templateId, overrides = {}) {
-  return post(`/api/planner/templates/${templateId}/apply`, { overrides });
-}
-
-export async function deleteTemplate(templateId) {
-  return del(`/api/planner/templates/${templateId}`);
 }
 
 // --- 常用同行人 ---

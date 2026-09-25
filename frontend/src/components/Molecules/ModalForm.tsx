@@ -1,4 +1,4 @@
-import { ReactNode, useState } from 'react';
+import { useState } from 'react';
 import { X as CloseIcon } from 'lucide-react';
 
 export interface ModalFormProps {

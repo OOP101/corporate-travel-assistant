@@ -17,17 +17,16 @@ from shared.middleware.session import SignedSession
 from core.generation import ItineraryGenerator, ChecklistGenerator, RerouteEngine
 from core.archive import SummaryGenerator
 from core.stores import (
-    TripStore, ProfileStore, TemplateStore,
-    DepartmentStore, EmployeeStore,
+    TripStore, ProfileStore,
+    EmployeeStore,
 )
 
 logger = logging.getLogger("core.deps")
 
 # ---- 内核资产 ----
+# 2026-09-25 收敛：template_store / dept_store 已删（对应页面与 CRUD 路由同步下线，零消费者）
 trip_store: Optional[TripStore] = None
 profile_store: Optional[ProfileStore] = None
-template_store: Optional[TemplateStore] = None
-dept_store: Optional[DepartmentStore] = None
 employee_store: Optional[EmployeeStore] = None
 llm_manager: Optional[LLMManager] = None
 checklist_gen: Optional[ChecklistGenerator] = None

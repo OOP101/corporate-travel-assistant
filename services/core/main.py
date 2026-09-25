@@ -39,7 +39,7 @@ from shared.tracing import TraceContext
 
 from core import deps
 from core.stores import (
-    TripStore, ProfileStore, TemplateStore, DepartmentStore, EmployeeStore,
+    TripStore, ProfileStore, EmployeeStore,
     PolicyStore, PolicyDocumentStore, TravelGuideStore, ApprovalStore,
 )
 from core.generation import ChecklistGenerator, RerouteEngine
@@ -53,6 +53,7 @@ from core.auth import auth_router, UserStore, resolve_session_id
 from core.admin import router as admin_router, DEFAULT_MODELS, CONFIG_ID, ConfigStore
 from core.api import trips as trips_api
 from core.api import approvals as approvals_api
+from core.api import profile as profile_api
 from policy_service.service import PolicyService
 from policy_service import router as policy_router, tools as policy_tools
 from guide_service.service import GuideService
@@ -130,11 +131,11 @@ async def lifespan(app: FastAPI):
         logger.info("已接入腾讯 TokenHub 多模型网关")
 
     # ---- 存储（内核资产）----
+    # 2026-09-25 收敛：TemplateStore / DepartmentStore 已删（页面与路由同步下线，零消费者）；
+    # EmployeeStore 保留 —— 审批闭环靠它把 user_id 映射到职级/审批人。
     deps.trip_store = TripStore(data_dir=settings.trip_data_dir)
     deps.profile_store = ProfileStore(data_dir=settings.profile_data_dir)
-    deps.template_store = TemplateStore(data_dir=settings.template_data_dir)
     org_dir = deps.org_data_dir()
-    deps.dept_store = DepartmentStore(data_dir=os.path.join(org_dir, "departments"))
     deps.employee_store = EmployeeStore(data_dir=os.path.join(org_dir, "employees"))
 
     # ---- 生成器 ----
@@ -256,6 +257,7 @@ app.include_router(auth_router)
 app.include_router(admin_router)
 app.include_router(trips_api.router)
 app.include_router(approvals_api.router)
+app.include_router(profile_api.router)
 app.include_router(policy_router.router)
 app.include_router(guide_router.router)
 
@@ -407,4 +409,4 @@ async def list_tools():
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=int(os.getenv("GATEWAY_PORT", "8001")))
+    uvicorn.run(app, host=settings.core_host, port=settings.core_port)

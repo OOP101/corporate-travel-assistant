@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Plane, Loader2, User, Lock, Check, Sparkles, ShieldCheck, Radio } from 'lucide-react';
+import { Plane, Loader2, User, Lock, Check, Sparkles, ShieldCheck, Route } from 'lucide-react';
 import { login, register } from '../api/auth';
 
 const MIN_PASSWORD = 8;
@@ -7,7 +7,7 @@ const MIN_PASSWORD = 8;
 const HIGHLIGHTS = [
   { icon: Sparkles, title: '一句话生成可执行行程', desc: '流式输出，边生成边可读；商务场景模板直出' },
   { icon: ShieldCheck, title: '差标先行，规则不让位', desc: '政策预检 → 超标标注 → 确认后才发起审批' },
-  { icon: Radio, title: '实时感知，异常主动提醒', desc: '航班 · 铁路 · 天气 · 路况 · 景点状态持续监控' },
+  { icon: Route, title: '突发能应变，落地可追溯', desc: '延误 · 闭馆 · 改期触发重排；行后归档总结与费用' },
 ];
 
 export default function LoginPage({ onLogin }) {
@@ -76,7 +76,7 @@ export default function LoginPage({ onLogin }) {
             差旅这件事，<br />从一句话到可执行的行程
           </h1>
           <p className="text-[13px] text-slate-400 leading-relaxed mb-8 max-w-md">
-            行程生成、差标校验、审批流转、费用报销与实时感知，收敛在同一条链路上。
+            行程生成、差标校验、审批流转与应变重排，收敛在同一条链路上。
           </p>
 
           <div className="space-y-4">
@@ -98,7 +98,7 @@ export default function LoginPage({ onLogin }) {
         </div>
 
         <div className="text-[11px] sidebar-muted">
-          v2.0 · 企业版　·　组织 · 政策 · 审批 · 报销 全链路打通
+          v3.0 · 企业版　·　Agent 内核 · 政策 · 审批 · 行程 全链路打通
         </div>
       </div>
 

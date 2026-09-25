@@ -1,4 +1,3 @@
-import { ReactNode } from 'react';
 import { ChevronDown } from 'lucide-react';
 
 export interface SelectProps {

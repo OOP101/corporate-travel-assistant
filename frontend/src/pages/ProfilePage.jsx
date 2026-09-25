@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { User, Save, Plus, Compass, Utensils, Footprints, BedDouble, Users } from 'lucide-react';
 import { getProfile, updateProfile, listCompanions, addCompanion } from '../api/planner';
 import { currentUserId } from '../api/auth';
-import { PageHeader, Card, Button, Badge, EmptyState, Field, TagInput, Drawer } from '../components';
+import { PageHeader, Card, Button, EmptyState, Field, TagInput, Drawer } from '../components';
 
 const TRAVEL_STYLE = [
   { value: '', label: '未设置' },
@@ -121,6 +121,11 @@ export default function ProfilePage() {
     error: 'bg-red-50 text-red-700 border-red-100',
   };
 
+  // 服务端落盘时间（epoch 秒）—— 让「已保存」这件事在界面上可见，而不只是发个 toast
+  const savedAt = profile?.updated_at
+    ? new Date(profile.updated_at * 1000).toLocaleString()
+    : '';
+
   return (
     <div className="px-6 py-5">
       <PageHeader
@@ -215,6 +220,7 @@ export default function ProfilePage() {
               <div className="text-[11px] text-ink-400 pt-2 border-t border-gray-100 flex items-center gap-1.5">
                 <Utensils size={11} />
                 画像按登录用户维度落盘，当前用户 ID：<span className="text-ink-600">{currentUserId() || '未登录'}</span>
+                {savedAt && <span> · 上次保存 {savedAt}</span>}
               </div>
             </div>
           )}

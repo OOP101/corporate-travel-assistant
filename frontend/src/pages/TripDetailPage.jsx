@@ -3,13 +3,13 @@ import { useParams, useNavigate } from 'react-router-dom';
 import {
   ArrowLeft, Clock, MapPin, Wallet, Package, Loader2, CheckCircle2, Printer,
   Plane, Building2, Camera, Utensils, BedDouble, ShoppingBag, Coffee,
-  Route, Bookmark, X,
+  Route, X,
 } from 'lucide-react';
 import {
   getTrip, getChecklist, generateSummary, getExpenses, getTripExportHtml,
-  rerouteTrip, saveTripAsTemplate,
+  rerouteTrip,
 } from '../api/planner';
-import { Tab, Badge, StatCard, Button, Drawer, Field, TagInput } from '../components';
+import { Tab, Badge, StatCard, Button, Drawer, Field } from '../components';
 
 const TYPE_META = {
   transport: { label: '交通', tone: 'blue', Icon: Plane },
@@ -40,9 +40,7 @@ export default function TripDetailPage() {
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState('itinerary');
   const [rerouteOpen, setRerouteOpen] = useState(false);
-  const [templateOpen, setTemplateOpen] = useState(false);
   const [rerouting, setRerouting] = useState(false);
-  const [savingTpl, setSavingTpl] = useState(false);
   const [notice, setNotice] = useState(null);
 
   useEffect(() => {
@@ -117,19 +115,6 @@ export default function TripDetailPage() {
     setRerouting(false);
   };
 
-  const doSaveTemplate = async (name, tags) => {
-    setSavingTpl(true);
-    setNotice(null);
-    try {
-      await saveTripAsTemplate(tripId, name, tags);
-      setNotice({ tone: 'ok', text: `已沉淀为模板「${name}」，可在「行程模板」页一键套用` });
-      setTemplateOpen(false);
-    } catch (e) {
-      setNotice({ tone: 'error', text: e.message });
-    }
-    setSavingTpl(false);
-  };
-
   if (loading) return <div className="flex justify-center py-24"><Loader2 className="animate-spin text-ink-400" size={26} /></div>;
   if (!trip) return <div className="text-center py-24 text-ink-400">行程不存在</div>;
 
@@ -163,12 +148,6 @@ export default function TripDetailPage() {
           className="flex items-center gap-1.5 px-3 py-1.5 text-[13px] rounded-lg border border-gray-200 text-ink-600 hover:bg-gray-50 hover:text-ink-900 transition-colors"
         >
           <Printer size={15} /> 导出行程单
-        </button>
-        <button
-          onClick={() => setTemplateOpen(true)}
-          className="flex items-center gap-1.5 px-3 py-1.5 text-[13px] rounded-lg border border-gray-200 text-ink-600 hover:bg-gray-50 hover:text-ink-900 transition-colors"
-        >
-          <Bookmark size={15} /> 另存为模板
         </button>
         <Button type="secondary" size="sm" onClick={() => setRerouteOpen(true)}>
           <Route size={15} className="mr-1.5" /> 应变重排
@@ -398,15 +377,6 @@ export default function TripDetailPage() {
         onClose={() => setRerouteOpen(false)}
         onSubmit={doReroute}
       />
-
-      <SaveTemplateDrawer
-        open={templateOpen}
-        defaultName={trip.title || ''}
-        destination={trip.destination || ''}
-        submitting={savingTpl}
-        onClose={() => setTemplateOpen(false)}
-        onSubmit={doSaveTemplate}
-      />
     </div>
   );
 }
@@ -525,62 +495,6 @@ function RerouteDrawer({ open, days, locked, submitting, onClose, onSubmit }) {
               {p}
             </button>
           ))}
-        </div>
-      </div>
-    </Drawer>
-  );
-}
-
-function SaveTemplateDrawer({ open, defaultName, destination, submitting, onClose, onSubmit }) {
-  const [name, setName] = useState('');
-  const [tags, setTags] = useState([]);
-
-  useEffect(() => {
-    if (!open) return;
-    setName(defaultName || '');
-    setTags(destination ? [destination] : []);
-  }, [open, defaultName, destination]);
-
-  return (
-    <Drawer
-      open={open}
-      title="另存为行程模板"
-      subtitle="复制当前行程快照，后续同类差旅可直接套用"
-      onClose={onClose}
-      footer={
-        <>
-          <Button type="secondary" size="sm" onClick={onClose}>取消</Button>
-          <Button
-            type="primary"
-            size="sm"
-            loading={submitting}
-            onClick={() => {
-              if (!name.trim()) {
-                window.alert('模板名称必填');
-                return;
-              }
-              onSubmit(name.trim(), tags);
-            }}
-          >
-            保存模板
-          </Button>
-        </>
-      }
-    >
-      <div className="space-y-4">
-        <Field label="模板名称" required>
-          <input
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="如：成都 3 日客户拜访"
-            className="w-full px-3 py-2 text-[13px] rounded-lg border border-gray-200 bg-white focusable"
-          />
-        </Field>
-        <Field label="标签" hint="建议含城市 / 天数 / 场景，模板列表支持按标签过滤（匹配任一）">
-          <TagInput value={tags} onChange={setTags} placeholder="如：成都" />
-        </Field>
-        <div className="text-[11px] text-ink-400">
-          模板与行程相互独立：之后修改行程不会同步到模板，套用模板也会生成新的行程。
         </div>
       </div>
     </Drawer>

@@ -140,6 +140,24 @@ class ApprovalEngine:
     # ------------------------------------------------------------------
     # 审批流转
     # ------------------------------------------------------------------
+    def create(self, approval: dict) -> dict:
+        """手工发起审批（非自动链路）—— 落库并**同步把行程置为待审批**。
+
+        为什么必须同步改行程状态：`approve()` 的回写条件是 `status == "pending_approval"`，
+        若建单时不置位，审批通过后行程状态永远停在原处 —— 表现为「审批过了，行程却没生效」。
+        仅对尚未生效的行程（无状态 / draft）置位，不去动已经 planned 的行程。
+        """
+        approval = dict(approval or {})
+        approval.setdefault("status", "pending")
+        approval_id = self.approvals.save(approval)
+
+        trip_id = approval.get("trip_id")
+        trip = self.trips.get(trip_id) if trip_id else None
+        if trip and trip.get("status") in (None, "", "draft"):
+            self.trips.update(trip_id, {"status": "pending_approval"})
+
+        return self.approvals.get(approval_id) or approval
+
     def approve(self, approval_id: str, comment: str = "") -> dict:
         """审批通过：pending → approved；行程 pending_approval → planned（生效）。"""
         approval = self._get_pending(approval_id)

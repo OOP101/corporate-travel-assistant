@@ -22,7 +22,6 @@ def client(tmp_path, monkeypatch):
     """数据目录指向临时路径，与真实 data/ 隔离；LLM/Embedding 关闭走降级路径"""
     monkeypatch.setattr(settings, "trip_data_dir", str(tmp_path / "trips"))
     monkeypatch.setattr(settings, "profile_data_dir", str(tmp_path / "profiles"))
-    monkeypatch.setattr(settings, "template_data_dir", str(tmp_path / "templates"))
     monkeypatch.setattr(settings, "llm_api_key", "")
     monkeypatch.setattr(settings, "embedding_provider", "none")
 
@@ -199,7 +198,6 @@ def client_llm_stub(tmp_path, monkeypatch):
     """
     monkeypatch.setattr(settings, "trip_data_dir", str(tmp_path / "trips"))
     monkeypatch.setattr(settings, "profile_data_dir", str(tmp_path / "profiles"))
-    monkeypatch.setattr(settings, "template_data_dir", str(tmp_path / "templates"))
     monkeypatch.setattr(settings, "embedding_provider", "none")
 
     with TestClient(core_main.app) as c:

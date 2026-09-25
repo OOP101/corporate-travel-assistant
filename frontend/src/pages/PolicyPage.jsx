@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import {
   FileText, Plus, Edit2, Trash2, Plane, Hotel, Utensils, Car,
-  Target, ShieldAlert, CheckCircle2, ArrowRight, Loader2,
+  Target, ShieldAlert, CheckCircle2, Loader2,
 } from 'lucide-react';
 import {
   listPolicies, createPolicy, updatePolicy, deletePolicy,

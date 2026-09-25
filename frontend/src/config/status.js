@@ -6,6 +6,9 @@
  *   reimbursements / approvals.by_status  值 = { count, amount }
  *
  * 取值统一走 countOf() / amountOf()，不要自己判断类型。
+ * （2026-09-25：v3 已无 by_status 聚合端点，这两个助手暂时没有调用方 —— 但聚合口径
+ * 是跨模块约定，等报表能力经 MCP 接回时直接用，不重复造。报销相关的 REIMB_STATUS
+ * 与实时监控的 MONITOR_STATUS 已随对应页面下线一并删除，不要凭空复活。）
  */
 
 export const TRIP_STATUS = {
@@ -19,24 +22,11 @@ export const TRIP_STATUS = {
   unknown: '未标注',
 };
 
-export const REIMB_STATUS = {
-  pending: '待审批',
-  approved: '已通过',
-  rejected: '已拒绝',
-  reimbursed: '已打款',
-};
-
 export const APPROVAL_STATUS = {
   pending: '待审批',
   approved: '已批准',
   rejected: '已拒绝',
   cancelled: '已取消',
-};
-
-export const MONITOR_STATUS = {
-  running: '运行中',
-  stopped: '已停止',
-  idle: '空闲',
 };
 
 export const fmtInt = (v) => (v ?? 0).toLocaleString();

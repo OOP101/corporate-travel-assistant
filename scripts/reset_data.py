@@ -12,14 +12,20 @@
 
 清理范围（scope=runtime，默认）:
     行程记录    data/trips/            data/test_trips/
-    业务单据    data/org/approvals/    data/org/reimbursements/
+    业务单据    data/org/approvals/
     用户画像    data/profiles/
     运行状态    .logs/                .run/
     各类缓存    __pycache__ / .pytest_cache / .pytest_tmp / frontend/node_modules/.vite / frontend/dist
 
 清理范围（scope=full，额外）:
-    组织与语料种子  data/org/{departments,employees,policies,policy_docs,guide_docs}
-    行程模板        data/templates/
+    员工种子         data/org/employees/（审批闭环依赖，--reseed 会重灌）
+    政策与语料种子    data/org/{policies,policy_docs,guide_docs}
+
+历史遗留目录（已下线能力，仅在仍存在时顺带清理，不再重建）:
+    data/templates/             行程模板（页面 2026-09-25 下线）
+    data/sense/                 感知监控订阅（sense-engine 已删）
+    data/org/reimbursements/    报销单（页面 2026-09-25 下线）
+    data/org/departments/       部门（组织管理页 2026-09-25 下线）
 
 永不清理:
     data/system/    后台配置（大模型 provider / 管理员账号）—— 清了要重新配

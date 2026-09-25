@@ -57,29 +57,19 @@ class Settings:
     embedding_api_model: str = field(default_factory=lambda: os.getenv("EMBEDDING_API_MODEL", ""))
     embedding_dim: int = field(default_factory=lambda: int(os.getenv("EMBEDDING_DIM", "0")))  # 0 = 自动推断
 
-    # --- 行智 · Journey Hub (8001) ---
-    journey_host: str = field(default_factory=lambda: os.getenv("JOURNEY_HOST", "0.0.0.0"))
-    journey_port: int = field(default_factory=lambda: int(os.getenv("JOURNEY_PORT", "8001")))
-
-    # --- 服务间调用 ---
-    planner_service_url: str = field(default_factory=lambda: os.getenv("PLANNER_SERVICE_URL", "http://127.0.0.1:8002"))
-    sense_service_url: str = field(default_factory=lambda: os.getenv("SENSE_SERVICE_URL", "http://127.0.0.1:8003"))
-
-    # --- 策程 · Planner Core (8002) ---
-    planner_host: str = field(default_factory=lambda: os.getenv("PLANNER_HOST", "0.0.0.0"))
-    planner_port: int = field(default_factory=lambda: int(os.getenv("PLANNER_PORT", "8002")))
-
-    # --- 感知 · Sense Engine (8003) ---
-    sense_host: str = field(default_factory=lambda: os.getenv("SENSE_HOST", "0.0.0.0"))
-    sense_port: int = field(default_factory=lambda: int(os.getenv("SENSE_PORT", "8003")))
+    # --- v3 单服务内核 core (8001) ---
+    # 注：v2 的 journey/planner/sense 三套 host/port 与两个 service_url 均已随四层服务删除，
+    #     且从来没有任何代码消费过它们（2026-09-25 实测 grep 零引用），故整体移除。
+    core_host: str = field(default_factory=lambda: os.getenv("CORE_HOST", "127.0.0.1"))
+    core_port: int = field(
+        default_factory=lambda: int(os.getenv("CORE_PORT", os.getenv("GATEWAY_PORT", "8001")))
+    )
 
     # --- 数据存储 ---
     chroma_persist_dir: str = field(default_factory=lambda: _anchor_data_path(os.getenv("CHROMA_PERSIST_DIR", "./data/chromadb")))
     trip_data_dir: str = field(default_factory=lambda: _anchor_data_path(os.getenv("TRIP_DATA_DIR", "./data/trips")))
     profile_data_dir: str = field(default_factory=lambda: _anchor_data_path(os.getenv("PROFILE_DATA_DIR", "./data/profiles")))
-    template_data_dir: str = field(default_factory=lambda: _anchor_data_path(os.getenv("TEMPLATE_DATA_DIR", "./data/templates")))
-    # 感知监控（订阅表 + 提醒），落盘以保证服务重启后订阅与提醒不丢
-    sense_data_dir: str = field(default_factory=lambda: _anchor_data_path(os.getenv("SENSE_DATA_DIR", "./data/sense")))
+    # 注：template_data_dir / sense_data_dir 已随「行程模板」与「实时感知」下线删除（2026-09-25，两者零消费者）
 
     # --- 外部数据源 ---
     # 地图：腾讯位置服务（需 key + SecretKey 做 SN 签名；高德已切换至腾讯）

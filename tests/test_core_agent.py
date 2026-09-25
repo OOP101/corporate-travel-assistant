@@ -25,7 +25,6 @@ def client_llm_stub(tmp_path, monkeypatch):
     """LLM「可用但 chat_json 返回空」——走真实管线，不打网络"""
     monkeypatch.setattr(settings, "trip_data_dir", str(tmp_path / "trips"))
     monkeypatch.setattr(settings, "profile_data_dir", str(tmp_path / "profiles"))
-    monkeypatch.setattr(settings, "template_data_dir", str(tmp_path / "templates"))
     monkeypatch.setattr(settings, "embedding_provider", "none")
 
     with TestClient(core_main.app) as c:

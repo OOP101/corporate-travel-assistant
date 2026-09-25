@@ -10,29 +10,11 @@ from typing import List, Optional, Dict
 from shared.store.base_store import BaseJsonStore
 from shared.store.document_store import DocumentCorpusStore
 
-logger = logging.getLogger("planner-core.store.org")
+logger = logging.getLogger("core.store.org")
 
 
-class DepartmentStore(BaseJsonStore):
-    """部门存储"""
-    _id_field = "dept_id"
-    _id_prefix = "dept_"
-
-    def list_by_parent(self, parent_id: str = "") -> List[dict]:
-        """列出指定上级部门的子部门"""
-        return [
-            d for d in self._entities.values()
-            if d.get("parent_id", "") == parent_id
-        ]
-
-    def get_children_recursive(self, dept_id: str) -> List[str]:
-        """递归获取所有子部门 ID"""
-        children = []
-        for d in self._entities.values():
-            if d.get("parent_id") == dept_id:
-                children.append(d["dept_id"])
-                children.extend(self.get_children_recursive(d["dept_id"]))
-        return children
+# 2026-09-25 收敛：DepartmentStore（部门）与 ReimbursementStore（报销）已删除
+# —— 组织管理页 / 报销管理页及其 CRUD 路由同步下线，两个类零消费者。
 
 
 class EmployeeStore(BaseJsonStore):
@@ -179,48 +161,6 @@ class ApprovalStore(BaseJsonStore):
             "approver_comment": comment,
         })
 
-
-class ReimbursementStore(BaseJsonStore):
-    """报销单存储 (P2)"""
-    _id_field = "reimbursement_id"
-    _id_prefix = "reb_"
-
-    def list_by_employee(self, employee_id: str) -> List[dict]:
-        """列出某员工提交的报销单"""
-        return [
-            r for r in self._entities.values()
-            if r.get("employee_id") == employee_id
-        ]
-
-    def list_by_approver(self, approver_id: str, status: str = "pending") -> List[dict]:
-        """列出待某审批人处理的报销单"""
-        return [
-            r for r in self._entities.values()
-            if r.get("approver_id") == approver_id and (not status or r.get("status") == status)
-        ]
-
-    def approve(self, reimbursement_id: str, comment: str = "") -> Optional[dict]:
-        """审批通过"""
-        return self.update(reimbursement_id, {
-            "status": "approved",
-            "approver_comment": comment,
-            "approved_at": time.time(),
-        })
-
-    def reject(self, reimbursement_id: str, comment: str = "") -> Optional[dict]:
-        """审批拒绝"""
-        return self.update(reimbursement_id, {
-            "status": "rejected",
-            "approver_comment": comment,
-        })
-
-    def pay(self, reimbursement_id: str, operator: str = "") -> Optional[dict]:
-        """打款（状态 → reimbursed）"""
-        return self.update(reimbursement_id, {
-            "status": "reimbursed",
-            "paid_at": time.time(),
-            "paid_by": operator,
-        })
 
 class PolicyDocumentStore(DocumentCorpusStore):
     """企业差旅政策文档存储（RAG 检索语料）

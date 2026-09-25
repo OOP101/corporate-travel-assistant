@@ -3,9 +3,8 @@ import { useNavigate } from 'react-router-dom';
 import { Search, CornerDownLeft, Loader2 } from 'lucide-react';
 import { navPageIndex } from '../../config/nav';
 import { listTrips } from '../../api/planner';
-import { listEmployees, listPolicyDocs } from '../../api/organization';
+import { listPolicyDocs } from '../../api/organization';
 import { listGuides } from '../../api/guides';
-import { isAdmin } from '../../api/auth';
 
 export interface CommandPaletteProps {
   open: boolean;
@@ -34,11 +33,11 @@ interface Command {
 /**
  * 命令面板（⌘K / Ctrl+K）
  *
- * 存在的意义：侧边栏只放高频入口，低频入口（组织管理 / 系统管理 / 某条具体行程…）
+ * 存在的意义：侧边栏只放高频入口，低频入口（系统管理 / 某条具体行程 / 某篇语料…）
  * 用「想不起来在哪就问一下」的方式承载 —— 这是 Linear / Vercel / Stripe 的通用做法。
  *
  * 静态来源：nav.js 的页面登记表（即时可用）。
- * 动态来源：行程 / 员工 / 知识语料，打开时并行拉取；任一来源失败都静默降级，
+ * 动态来源：行程 / 知识语料，打开时并行拉取；任一来源失败都静默降级，
  *          面板本身绝不能因为某个接口挂了就打不开。
  */
 
@@ -53,17 +52,6 @@ async function loadTripCommands(): Promise<Command[]> {
         .join(' · ') || '未填写日期',
     to: `/trips/${t.trip_id}`,
     group: '行程',
-  }));
-}
-
-async function loadEmployeeCommands(): Promise<Command[]> {
-  const d: any = await listEmployees();
-  return (d?.employees || []).map((e: any) => ({
-    key: `emp:${e.employee_id}`,
-    label: e.name,
-    sub: [e.title, e.email].filter(Boolean).join(' · '),
-    to: '/org',
-    group: '员工',
   }));
 }
 
@@ -108,7 +96,6 @@ export const CommandPalette = ({ open, onOpenChange }: CommandPaletteProps) => {
     setLoading(true);
     let alive = true;
     const tasks = [loadTripCommands(), loadCorpusCommands()];
-    if (isAdmin()) tasks.push(loadEmployeeCommands());
     Promise.allSettled(tasks).then((rs) => {
       if (!alive) return;
       setRemote(rs.flatMap((r) => (r.status === 'fulfilled' ? r.value : [])));
@@ -207,7 +194,7 @@ export const CommandPalette = ({ open, onOpenChange }: CommandPaletteProps) => {
             value={q}
             onChange={(e) => setQ(e.target.value)}
             onKeyDown={onInputKey}
-            placeholder="搜索页面、行程、员工、语料…"
+            placeholder="搜索页面、行程、语料…"
             className="flex-1 min-w-0 text-sm outline-none placeholder:text-ink-400"
           />
           {loading && <Loader2 size={14} className="animate-spin text-ink-400 shrink-0" />}

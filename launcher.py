@@ -5,10 +5,10 @@
 设计目标：
   - 双击 start.bat 即用：环境自检 → 依赖增量安装 → 并行后台启动 → 增量健康检查 → 开浏览器
       ★ 默认（无参数）：启动完成即自动关窗，重复双击不会叠窗口
-      ★ 三个服务默认合并为**一个进程**（单体模式，端口 8001）
-  - 两种运行模式（随时切换）：
-      ★ single（默认）：单体模式 —— services/gateway 把三个服务的 app 装配进**单进程单端口 8001**
-      ★ micro        ：微服务模式 —— 行智 8001 / 策程 8002 / 感知 8003 各自独立进程
+      ★ **v3 单服务**：只有一个 core 进程，端口 8001
+  - 运行模式：
+      ★ single（默认）：单服务内核 —— `uvicorn core.main:app`（cwd=services，端口 8001）
+      ★ micro        ：**已退役的别名**，行为与 single 完全一致（保留仅为兼容旧脚本/旧习惯）
   - 命令行模式：python launcher.py [start|menu|stop|restart|status|clean|fresh] [single|micro]
   - 后端/前端均 detached 后台运行，日志统一落盘 .logs/
   - 启动策略：服务并行拉起（线程池），健康检查逐服务就绪即报，缩短冷启动等待
@@ -70,7 +70,7 @@ MODE_ALIASES = {
     "single": "single", "mono": "single", "1": "single", "单体": "single", "单体模式": "single",
     "micro": "micro", "ms": "micro", "2": "micro", "微服务": "micro", "微服务模式": "micro",
 }
-MODE_LABELS = {"single": "单体模式（单进程 · 单端口 8001）", "micro": "微服务模式（3 端口 8001/8002/8003）"}
+MODE_LABELS = {"single": "单服务内核（单进程 · 单端口 8001）", "micro": "单服务内核（micro 已是 single 的退役别名）"}
 DEFAULT_MODE = MODE_ALIASES.get(os.getenv("CJH_MODE", "single").strip().lower(), "single")
 FRONTEND_PORT = 3001          # 与 vite.config.js 一致
 FRONTEND_LOG = "frontend.log"
@@ -311,22 +311,16 @@ def load_env_file() -> dict:
 
 
 def _backend_env(service_dir: str, mode: str = DEFAULT_MODE) -> dict:
+    """构造子进程环境。`mode` 保留仅为兼容调用方 —— v3 下 single/micro 行为一致。"""
     env = os.environ.copy()
     env.update(load_env_file())
     workdir = BASE_DIR / service_dir
     env["PYTHONPATH"] = f"{BASE_DIR};{workdir}" + (
         f";{env['PYTHONPATH']}" if env.get("PYTHONPATH") else ""
     )
-    if mode == "micro":
-        # 微服务模式：行程/感知分别落在 8002 / 8003
-        env["PLANNER_SERVICE_URL"] = "http://127.0.0.1:8002"
-        env["SENSE_SERVICE_URL"] = "http://127.0.0.1:8003"
-    else:
-        # 单体模式：三服务同进程，内部互调走网关前缀（零代码改动）
-        gw = SINGLE_BACKENDS[0][3]
-        env["GATEWAY_PORT"] = str(gw)
-        env["PLANNER_SERVICE_URL"] = f"http://127.0.0.1:{gw}/planner"
-        env["SENSE_SERVICE_URL"] = f"http://127.0.0.1:{gw}/sense"
+    # v3 只有一个 core 服务：端口经 CORE_PORT 下发（micro 为退役别名，行为一致）。
+    # 注：v2 的 PLANNER_SERVICE_URL / SENSE_SERVICE_URL 已随四层服务删除，且从无消费者。
+    env["CORE_PORT"] = str(SINGLE_BACKENDS[0][3])
     env.setdefault("DEV_API_KEY", "ak_dev_local")
     return env
 
@@ -681,10 +675,10 @@ def interactive_menu(mode: str = DEFAULT_MODE):
     current = normalize_mode(mode)
     while True:
         actions = (
-            f"[1] 启动 · 单体模式（推荐·单进程单端口）   [2] 启动 · 微服务模式（3 端口）\n"
-            f"[3] 停止全部（含前端）   [4] 重启当前模式（{MODE_LABELS.get(current, current)}）\n"
+            f"[1] 启动 · 单服务内核（推荐·单进程单端口 8001）   [2] 启动（micro 别名·行为同 [1]）\n"
+            f"[3] 停止全部（含前端）   [4] 重启（{MODE_LABELS.get(current, current)}）\n"
             f"[5] 查看服务日志   [6] 打开日志目录   [7] 打开工作台   [8] 刷新状态\n"
-            f"[9] 清空运行数据（行程/审批/报销/日志/缓存）   [10] 干净启动（清空后启动）\n"
+            f"[9] 清空运行数据（行程/审批/日志/缓存）   [10] 干净启动（清空后启动）\n"
             f"[11] 每次启动自动清空：{C_GREEN + '已开启' + C_RESET if FRESH_FLAG.exists() else C_DIM + '已关闭' + C_RESET}\n"
             f"[0] 退出（服务继续后台运行）"
         )

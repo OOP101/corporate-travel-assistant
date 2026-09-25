@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import {
   CheckCircle, XCircle, Clock, AlertTriangle,
-  FileText, User, Calendar, DollarSign, MessageSquare, X, Check, MapPin,
+  FileText, User, Calendar, DollarSign, MessageSquare, X, MapPin,
 } from 'lucide-react';
 import {
   listApprovals, getApproval, approveRequest, rejectRequest, cancelApproval,

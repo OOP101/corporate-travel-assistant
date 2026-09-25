@@ -10,7 +10,6 @@
  *  - 首次进入且无本地快照时，回放 journey-hub 服务端会话历史兜底。
  */
 import { chatStream, clearSession, getSessionHistory, confirmTripPlan } from '../api/journey';
-import { subscribeMonitor } from '../api/sense';
 import { currentUserId } from '../api/auth';
 
 // 会话 ID 即登录用户名 —— 与 planner 侧 resolve_user_id 同一口径，
@@ -38,7 +37,7 @@ try {
 export const GREETING = {
   role: 'assistant',
   content:
-    '你好！我是企业行程智能助手，可以帮你一句话规划差旅行程、安排会议与客户拜访、解答行程问题，行中还有实时提醒和应急重排。试试下面这些示例，或直接描述你的需求：',
+    '你好！我是企业行程智能助手，可以帮你一句话规划差旅行程、安排会议与客户拜访、解答行程问题，也能为行程做应变重排与应急协助。试试下面这些示例，或直接描述你的需求：',
   intent: '',
   cards: [],
   followups: [],
@@ -46,7 +45,7 @@ export const GREETING = {
 
 // 回答后的补充追问 —— 固定 3 条（气泡下「继续问问」与输入框上方常驻区同源）
 export const FOLLOWUPS = {
-  plan: ['为这个行程订阅出行监控', '这趟行程大概要花多少钱？', '如果航班延误了会怎么办？'],
+  plan: ['这个行程的出行清单准备好了吗？', '这趟行程大概要花多少钱？', '如果航班延误了会怎么办？'],
   chat: ['公司差旅报销标准是什么？', '住宿标准是多少？', '出差审批流程是怎样的？'],
   manage: ['查看我的行程列表', '帮我看看最近的行程安排', '帮我改一下明天的行程'],
   emergency: ['紧急联系电话有哪些？', '证件丢失了怎么处理？', '航班取消了我该怎么办？'],
@@ -55,7 +54,7 @@ export const FOLLOWUPS = {
 // 各意图候选池（含固定 3 条在内），供「换一批」随机抽取
 export const FOLLOWUP_POOL = {
   plan: [
-    '为这个行程订阅出行监控', '这趟行程大概要花多少钱？', '如果航班延误了会怎么办？',
+    '这个行程的出行清单准备好了吗？', '这趟行程大概要花多少钱？', '如果航班延误了会怎么办？',
     '调整行程：把第三天下午空出来', '预算偏高，帮我换成高铁方案', '再规划一条返程备用路线',
     '这趟行程符合差旅政策吗？', '给同行的同事也同步一份行程单', '把出发日期改到周五',
   ],
@@ -183,23 +182,6 @@ function onStreamEvent(evt) {
       cards: evt.trip_id ? [{ type: 'trip', id: evt.trip_id }] : m.cards,
       savedTripId: evt.trip_id || null,
     }));
-
-    // 自动订阅出行监控（天气 + 路况 + 景点）—— 失败只记日志不阻断对话
-    if (evt.trip_id && evt.destination) {
-      const monitorPayload = {
-        trip_id: evt.trip_id,
-        user_id: currentUserId(),
-        origin: evt.origin || '',
-        destination: evt.destination || '',
-        attractions: Array.isArray(evt.attractions) ? evt.attractions : [],
-        check_weather: true,
-        check_traffic: !!(evt.origin && evt.destination),
-        check_attractions: Array.isArray(evt.attractions) && evt.attractions.length > 0,
-      };
-      subscribeMonitor(monitorPayload).catch((err) => {
-        console.warn('[chatStore] 自动订阅监控失败:', err);
-      });
-    }
   } else if (evt.event === 'chunk') {
     patchLast((m) => ({ ...m, content: (m.content || '') + evt.content, progress: '' }));
   } else if (evt.event === 'respond') {

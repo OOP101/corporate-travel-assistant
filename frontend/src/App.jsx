@@ -9,15 +9,10 @@ const ConsolePage = lazy(() => import('./pages/ConsolePage'));
 const ChatPage = lazy(() => import('./pages/ChatPage'));
 const TripsPage = lazy(() => import('./pages/TripsPage'));
 const TripDetailPage = lazy(() => import('./pages/TripDetailPage'));
-const TemplatesPage = lazy(() => import('./pages/TemplatesPage'));
-const AlertsPage = lazy(() => import('./pages/AlertsPage'));
 const ProfilePage = lazy(() => import('./pages/ProfilePage'));
-const OrgPage = lazy(() => import('./pages/OrgPage'));
 const PolicyPage = lazy(() => import('./pages/PolicyPage'));
 const CorpusPage = lazy(() => import('./pages/CorpusPage'));
 const ApprovalPage = lazy(() => import('./pages/ApprovalPage'));
-const ReimbursementPage = lazy(() => import('./pages/ReimbursementPage'));
-const ReportsPage = lazy(() => import('./pages/ReportsPage'));
 const AdminPage = lazy(() => import('./pages/AdminPage'));
 const LoginPage = lazy(() => import('./pages/LoginPage'));
 
@@ -60,15 +55,10 @@ export default function App() {
                 <Route path="/chat" element={<ChatPage />} />
                 <Route path="/trips" element={<TripsPage />} />
                 <Route path="/trips/:tripId" element={<TripDetailPage />} />
-                <Route path="/templates" element={<TemplatesPage />} />
-                <Route path="/alerts" element={<AlertsPage />} />
                 <Route path="/profile" element={<ProfilePage />} />
-                <Route path="/org" element={<OrgPage />} />
                 <Route path="/policy" element={<PolicyPage />} />
                 <Route path="/corpus" element={<CorpusPage />} />
                 <Route path="/approval" element={<ApprovalPage />} />
-                <Route path="/reimbursement" element={<ReimbursementPage />} />
-                <Route path="/reports" element={<ReportsPage />} />
                 <Route path="/admin" element={<AdminPage />} />
               </Routes>
             </Suspense>

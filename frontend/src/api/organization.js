@@ -1,65 +1,14 @@
 /**
- * 组织管理 API —— P1 企业化功能
+ * 企业化能力 API —— 差旅政策、政策文档、审批流转
  *
- * 部门管理、员工管理、差旅政策、政策文档、审批流转
+ * ⚠️ 2026-09-25 收敛：部门 / 员工 / 报销 / 报表四组接口已随页面一起下线。
+ * v3 切型删除了对应后端路由（`/departments`、`/employees`、`/reimbursements`、`/reports/*`
+ * 在 `services/` 下已无实现，见 scripts/check_api_contract.py），留着这些函数只会
+ * 让调用方在运行时吃 404。规划中的替代形态是 MCP。
  */
 import { get, post, postEmpty, put, del } from './client';
 
 const BASE_URL = '/api/planner';
-
-// ============================================
-// 部门管理
-// ============================================
-
-export async function listDepartments(parentId = '') {
-  const params = parentId ? `?parent_id=${parentId}` : '';
-  return get(`${BASE_URL}/departments${params}`);
-}
-
-export async function createDepartment(data) {
-  return post(`${BASE_URL}/departments`, data);
-}
-
-export async function getDepartment(deptId) {
-  return get(`${BASE_URL}/departments/${deptId}`);
-}
-
-export async function updateDepartment(deptId, data) {
-  return put(`${BASE_URL}/departments/${deptId}`, data);
-}
-
-export async function deleteDepartment(deptId) {
-  return del(`${BASE_URL}/departments/${deptId}`);
-}
-
-// ============================================
-// 员工管理
-// ============================================
-
-export async function listEmployees({ deptId, level, keyword } = {}) {
-  const params = new URLSearchParams();
-  if (deptId) params.append('dept_id', deptId);
-  if (level) params.append('level', level);
-  if (keyword) params.append('keyword', keyword);
-  const query = params.toString();
-  return get(`${BASE_URL}/employees${query ? `?${query}` : ''}`);
-}
-
-export async function createEmployee(data) {
-  return post(`${BASE_URL}/employees`, data);
-}
-
-export async function getEmployee(employeeId) {
-  return get(`${BASE_URL}/employees/${employeeId}`);
-}
-
-export async function updateEmployee(employeeId, data) {
-  return put(`${BASE_URL}/employees/${employeeId}`, data);
-}
-
-export async function deleteEmployee(employeeId) {
-  return del(`${BASE_URL}/employees/${employeeId}`);
-}
 
 // ============================================
 // 差旅政策
@@ -132,6 +81,10 @@ export async function reindexPolicyDocs(force = false) {
 
 // ============================================
 // 审批管理
+//
+// 鉴权（2026-09-25 加固）：后端要求调用方声明身份，并校验「是否该单的申请人/审批人」。
+// 身份由 client.js 的 authHeaders() 自动附带 Bearer；未登录时后端按 401 拒绝，
+// 不会再出现「谁都能批」的情况。
 // ============================================
 
 export async function listApprovals({ employeeId, approverId, status } = {}) {
@@ -161,54 +114,4 @@ export async function rejectRequest(approvalId, comment = '') {
 
 export async function cancelApproval(approvalId) {
   return postEmpty(`${BASE_URL}/approvals/${approvalId}/cancel`);
-}
-
-// ============================================
-// 报销管理 (P2)
-// ============================================
-
-export async function listReimbursements({ employeeId, approverId, status } = {}) {
-  const params = new URLSearchParams();
-  if (employeeId) params.append('employee_id', employeeId);
-  if (approverId) params.append('approver_id', approverId);
-  if (status) params.append('status', status);
-  const query = params.toString();
-  return get(`${BASE_URL}/reimbursements${query ? `?${query}` : ''}`);
-}
-
-export async function submitReimbursement(data) {
-  // data: { trip_id, employee_id, approver_id?, remark?, items? }
-  return post(`${BASE_URL}/reimbursements`, data);
-}
-
-export async function getReimbursement(reimbursementId) {
-  return get(`${BASE_URL}/reimbursements/${reimbursementId}`);
-}
-
-export async function approveReimbursement(reimbursementId, comment = '') {
-  return post(`${BASE_URL}/reimbursements/${reimbursementId}/approve`, { comment });
-}
-
-export async function rejectReimbursement(reimbursementId, comment = '') {
-  return post(`${BASE_URL}/reimbursements/${reimbursementId}/reject`, { comment });
-}
-
-export async function payReimbursement(reimbursementId, operator = '') {
-  return post(`${BASE_URL}/reimbursements/${reimbursementId}/pay`, { operator });
-}
-
-// ============================================
-// 报表中心 (P2)
-// ============================================
-
-export async function getReportOverview() {
-  return get(`${BASE_URL}/reports/overview`);
-}
-
-export async function getReportByDepartment() {
-  return get(`${BASE_URL}/reports/by-department`);
-}
-
-export async function getReportByMonth() {
-  return get(`${BASE_URL}/reports/by-month`);
 }
