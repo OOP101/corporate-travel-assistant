@@ -86,9 +86,10 @@ class Settings:
 
     # --- 鉴权 ---
     dev_api_key: str = field(default_factory=lambda: os.getenv("DEV_API_KEY", "ak_dev_local"))
-    # 会话签名密钥：journey-hub 签发登录 token，planner-core 用同一密钥离线校验。
-    # 未显式设置时回退 dev_api_key（本地/单体开箱可用）；生产必须显式设置
+    # 会话签名密钥：v3 单服务自签自验（HMAC-SHA256 无状态 token）。
+    # 未显式设置时回退 dev_api_key（本地开箱可用）；生产必须显式设置
     # SESSION_SECRET，否则任何知道默认 key 的人都能伪造登录态。
+    # 注意：改动该值会让所有已签发 token 立即失效。
     session_secret: str = field(
         default_factory=lambda: os.getenv("SESSION_SECRET", "") or os.getenv("DEV_API_KEY", "ak_dev_local")
     )
