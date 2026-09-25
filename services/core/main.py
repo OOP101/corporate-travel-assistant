@@ -14,8 +14,15 @@ v3 架构（从「三层微服务 + 10 个 CRUD 路由」推倒重构）：
 """
 import logging
 import os
+import sys
+from pathlib import Path
 from typing import Optional
 from contextlib import asynccontextmanager
+
+# 进程引导：launcher 以 services/ 为 cwd 启动 uvicorn，这里补齐仓库根到 sys.path（shared 依赖）
+_ROOT = str(Path(__file__).resolve().parents[2])
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from pydantic import BaseModel, Field

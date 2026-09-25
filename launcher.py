@@ -58,17 +58,13 @@ BACKUP_DIR = BASE_DIR / ".backup"
 
 APP_TITLE = "企业智行 · Corporate Journey Hub"
 
-# (名称, 展示名, 服务目录, 端口, 日志名)
-# 单体模式（默认）：单进程单端口，三个业务服务的 app 由 services/gateway 装配
+# (名称, 展示名, 服务目录(cwd), 端口, 日志名)
+# v3 起：唯一后端 = Agent 内核（单进程单端口 8001），旧三层微服务已随切型移除
 SINGLE_BACKENDS = [
-    ("gateway", "统一网关 · 三服务单体", "services/gateway", 8001, "gateway.log"),
+    ("core", "企业智行 · Agent 内核（v3）", "services", 8001, "core.log"),
 ]
-# 微服务模式：三个服务各自独立进程（架构演示 / 单服务调试仍用这套）
-MICRO_BACKENDS = [
-    ("journey", "行智 · Journey Hub", "services/journey-hub", 8001, "journey.log"),
-    ("planner", "策程 · Planner Core", "services/planner-core", 8002, "planner.log"),
-    ("sense", "感知 · Sense Engine", "services/sense-engine", 8003, "sense.log"),
-]
+# 微服务模式已退役：保留别名兼容旧习惯，行为与单体一致
+MICRO_BACKENDS = SINGLE_BACKENDS
 MODES = {"single": SINGLE_BACKENDS, "micro": MICRO_BACKENDS}
 MODE_ALIASES = {
     "single": "single", "mono": "single", "1": "single", "单体": "single", "单体模式": "single",
@@ -366,8 +362,8 @@ def start_backend(name: str, display: str, service_dir: str, port: int, log_name
     if is_port_alive(port):
         log(f"  {C_GREEN}[跳过]{C_RESET} {display} :{port} 已在运行")
         return False
-    # 网关入口是 services/gateway/main.py；微服务各自是 api/main.py
-    app_target = "main:app" if name == "gateway" else "api.main:app"
+    # v3：Agent 内核入口是 core/main.py（--app-dir 指向 services/，core 包可解析）
+    app_target = "core.main:app" if name == "core" else "api.main:app"
     cmd = [str(VENV_PY), "-m", "uvicorn", app_target,
            "--app-dir", str(BASE_DIR / service_dir),
            "--host", "127.0.0.1", "--port", str(port)]
